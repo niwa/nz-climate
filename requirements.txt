@@ -1,0 +1,6 @@
+streamlit>=1.36
+plotly>=5.22
+pandas>=2.2
+numpy>=1.26
+xarray>=2024.1
+netcdf4>=1.6

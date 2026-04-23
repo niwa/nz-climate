@@ -5,3 +5,5 @@ pages/__pycache__/
 **/*.pyc
 *.log
 .streamlit/secrets.toml
+.ipynb_checkpoints/
+*.zip

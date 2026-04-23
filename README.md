@@ -1,108 +1,255 @@
-# NIWA-REMS Climate Dashboard
+# NZ Climate Indicator Dashboard
 
-A two-page Streamlit app for exploring NIWA-REMS ML-Downscaled CMIP6 climate indicators over New Zealand.
+An interactive web application for exploring projected climate change across
+New Zealand under multiple emissions scenarios. Built with Streamlit.
 
 ---
 
-## Pages
+## What the app does
 
-| Page | Description |
-|------|-------------|
-| **Climate Graph** | Time-series projections of temperature, precipitation, and wind for NZ regions under SSP1-2.6 → SSP5-8.5 |
-| **NZ Map** | Interactive gridded map of climate indicators (TX, PR, FD, …) from the NIWA-REMS NetCDF output |
+The dashboard visualises **25+ climate indicators** (temperature, rainfall, wind,
+and record-chance metrics) downscaled to a 12 km NZ grid from global CMIP6 model
+ensembles. The core map page (`pages/2_NZ_Map.py`) renders two side-by-side
+animated Leaflet maps:
+
+| Panel | Shows |
+|-------|-------|
+| **Left** | Absolute projected values (sequential colour scale) |
+| **Right** | Change from a chosen historical baseline (diverging colour scale) |
+
+Key features:
+- Four SSP emissions scenarios (SSP1-2.6 through SSP5-8.5)
+- Two historical baselines (1995–2014, 1986–2005)
+- Multi-model ensemble mean + per-model selection
+- Animated timeline blending between snapshot periods
+- Click-to-pin time-series chart with model uncertainty bands (50 % / 90 % intervals)
+- Hover tooltips with interpolated values at any grid point
+- Regional council and country border overlays
 
 ---
 
 ## Repository structure
 
 ```
-climate-dash/
+.
 ├── Home.py                        # Landing page
 ├── pages/
-│   ├── 1_Climate_Graph.py         # CMIP6 time-series chart
-│   └── 2_NZ_Map.py                # Gridded NZ indicator map
-├── index_data/                    # ← Place output_v3 contents here
-│   ├── historical/
-│   │   └── static_maps/
-│   │       ├── TX/
-│   │       │   └── TX_historical_*.nc
-│   │       └── …
-│   ├── ssp126/
-│   ├── ssp245/
-│   ├── ssp370/
-│   └── ssp585/
-├── climate_data/                  # CMIP6 region-average CSVs (optional)
-├── VCSN_data/                     # VCSN observed precipitation CSVs
-├── seven_station/                 # 7-station observed temperature CSVs
-├── logos/
-│   └── esnz_logo_horz_new.png     # (optional) sidebar logo
-├── .streamlit/
-│   └── config.toml
+│   └── 2_NZ_Map.py                # Main map application
+├── assets/
+│   ├── coastlines/                # NZ coastline + regional council shapefiles
+│   ├── color_ranges/              # Pre-computed colour scale JSON files
+│   └── frame_cache/               # Runtime PNG cache (gitignored in production)
+├── helper_scripts/
+│   ├── precompute_color_ranges.py # Compute vmin/vmax across all indicators
+│   ├── precompute_frames.py       # Pre-render PNG snapshots (PBS job)
+│   ├── precompute_record.py       # Pre-compute record-chance indicators
+│   └── precompute_uncertainty.py  # Build model-spread cache (required before running)
+├── test/
+│   ├── generate_demo_data.py      # Creates synthetic demo dataset
+│   ├── test_README.md             # Demo data documentation
+│   └── demo_data/                 # Synthetic NetCDF + uncertainty cache (committed)
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Data setup
+## Quick start — demo mode (no HPC data required)
 
-### NetCDF indicator maps (NZ Map page)
+The app ships with a small synthetic dataset covering the **TX (mean daily max
+temperature)** indicator under **SSP3-7.0**, so the full UI can be explored
+without access to any external storage.
 
-Copy the entire `output_v3/` directory and rename it `index_data/`:
+### 1. Clone the repository
 
 ```bash
-cp -r /path/to/output_v3  index_data
+git clone <repo-url>
+cd nz-climate-git
 ```
 
-Expected file name pattern inside each indicator folder:
+### 2. Create a Python environment
 
-```
-{indicator}_{scenario}_{model}_{ensemble}_base_bp{YYYY-YYYY}_{SEASON}_NZ12km.nc
-# e.g.
-TX_historical_ACCESS-CM2_r4i1p1f1_base_bp1995-2014_ANN_NZ12km.nc
-TX_ssp370_EC-Earth3_r1i1p1f1_base_bp2040-2059_ANN_NZ12km.nc
-```
+**With conda (recommended):**
 
-### Climate Graph page
-
-Optional — place CMIP6 region-average CSVs in `climate_data/` with the naming:
-
-```
-cmip6_{variable}_{season/month/Annual}_{Region}_{resolution}.csv
+```bash
+conda create -n nz-climate python=3.11
+conda activate nz-climate
 ```
 
-Columns required: `model`, `experiment`, `year`, `{variable}`.
+**With venv:**
 
----
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+```
 
-## Running locally
+> **Python version:** 3.11 is recommended. The app has been tested on 3.11
+> and 3.9. Avoid 3.12+ until `cartopy` and `fiona` wheels are widely available
+> for it.
+
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
+```
+
+Some packages (`geopandas`, `fiona`, `cartopy`, `rasterio`) have C extensions.
+If `pip` fails on any of them, try conda first:
+
+```bash
+conda install -c conda-forge geopandas fiona rasterio cartopy shapely
+pip install -r requirements.txt   # installs remaining pure-Python deps
+```
+
+### 4. Generate the demo data (first time only)
+
+```bash
+python test/generate_demo_data.py
+```
+
+This creates the synthetic NetCDF files and uncertainty cache under
+`test/demo_data/`. They are already committed to the repository, so you only
+need to re-run this if you delete them or want to regenerate from scratch.
+
+### 5. Launch the app
+
+```bash
 streamlit run Home.py
+```
+
+Open [http://localhost:8501](http://localhost:8501) in your browser. Navigate to
+**NZ Climate Indicator Map**. A blue banner confirms demo mode is active.
+
+> Demo mode activates automatically when the real NIWA data paths are absent
+> and `test/demo_data/` exists — no configuration needed.
+
+---
+
+## Running on NIWA HPC (ESI)
+
+On the NIWA cluster the Conda environment is initialised via the NIWA module
+system before activating the project environment:
+
+```bash
+. /opt/niwa/profile/conda_24.11.3_2025.05.1.sh
+conda activate nz-climate
+
+/path/to/conda/envs/nz-climate/bin/streamlit run Home.py \
+    --server.port 8502 \
+    --server.headless true
+```
+
+The real data is read from the paths configured in `pages/2_NZ_Map.py`:
+
+```python
+DATA_ROOT = Path(os.environ.get(
+    "NZMAP_DATA_ROOT",
+    "/esi/project/niwa03712/ML_Downscaled_CMIP6/...",
+))
+REC_ROOT = Path(os.environ.get(
+    "NZMAP_REC_ROOT",
+    "/esi/project/niwa03712/westphall/nz-climate/REC",
+))
+```
+
+These can be overridden without code changes via environment variables:
+
+```bash
+export NZMAP_DATA_ROOT=/your/data/path
+export NZMAP_REC_ROOT=/your/rec/path
+streamlit run Home.py
+```
+
+Before running with real data, the uncertainty cache must be pre-computed:
+
+```bash
+python helper_scripts/precompute_uncertainty.py
 ```
 
 ---
 
-## Deploying to Streamlit Community Cloud
+## Cloud / Azure storage
 
-1. Push this repo to GitHub (including `index_data/` — see note below on file size).
-2. Connect your repo at [share.streamlit.io](https://share.streamlit.io).
-3. Set **Main file path** to `Home.py`.
+> **🚧 Placeholder — to be completed once Azure access is confirmed.**
 
-> **Large data note:** GitHub has a 100 MB per-file limit and a 5 GB repo limit.  
-> If your `index_data/` is too large, use [Git LFS](https://git-lfs.com/) or host the
-> NetCDF files on an S3/Azure bucket and add a download step in the app.
+The current hardcoded HPC paths will be replaced with Azure Blob Storage
+references once the storage account is provisioned. The intended approach is:
+
+- Data will be mounted or accessed via the `NZMAP_DATA_ROOT` / `NZMAP_REC_ROOT`
+  environment variables — no code changes required.
+- Pre-computed caches (frame PNGs, uncertainty bands) will be stored in a
+  dedicated container and synced to the app's `assets/` directory on startup.
+- Credentials will be handled via Azure Managed Identity / environment
+  variables — no secrets in code.
+
+**The demo mode in this repository proves the full application pipeline works
+end-to-end from a clean checkout, independent of any storage backend.**
 
 ---
 
-## Dependencies
+## Notes for code reviewers
 
-| Package | Purpose |
-|---------|---------|
-| `streamlit` | Web app framework |
-| `plotly` | Interactive charts and maps |
-| `xarray` | NetCDF file reading |
-| `netcdf4` | NetCDF backend for xarray |
-| `pandas` | Tabular data |
-| `numpy` | Numerical arrays |
+### Data paths
+The two internal HPC paths in `pages/2_NZ_Map.py` (`DATA_ROOT`, `REC_ROOT`)
+are the only pieces of NIWA-internal information in the codebase. Both are
+already externalised to environment variables. They will be replaced with
+Azure storage references once access is granted.
+
+### Demo mode
+The `_DEMO_MODE` flag (Part 1 of `2_NZ_Map.py`) redirects both data roots and
+the uncertainty cache directory to `test/demo_data/` when the real paths are
+absent. It adds a visible banner but otherwise exercises the identical code path
+as production — the same renderer, the same JS player, the same chart logic.
+
+### Pre-computed caches
+The app is designed around two levels of caching:
+
+| Cache | Location | Purpose |
+|-------|----------|---------|
+| `assets/frame_cache/*.pkl` | Disk | Rendered PNG snapshots (expensive, minutes per selection) |
+| `assets/uncertainty_cache/*.pkl` | Disk | Model-spread percentile bands (generated by `precompute_uncertainty.py`) |
+
+The frame cache entries committed to this repo were generated from the demo
+data and are safe to delete — they will be regenerated on first load.
+
+### Security notes
+- No credentials, tokens, or API keys anywhere in the codebase.
+- On-disk pickle files (`frame_cache`, `uncertainty_cache`) are loaded with
+  `pickle.load`. This is safe as long as only the app writes to those
+  directories. The Azure deployment will restrict write access accordingly.
+- The sidebar posts `postMessage` to sibling iframes for opacity/speed
+  controls — intentional, same-origin only.
+
+---
+
+## Environment troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `geopandas` / `fiona` install fails | `conda install -c conda-forge geopandas fiona` |
+| `cartopy` install fails | `conda install -c conda-forge cartopy` |
+| `No such file or directory: Home.py` | You are not in the repo root — `cd nz-climate-git` |
+| Port already in use | Add `--server.port 8503` (or any free port) |
+| Demo banner not appearing | Check `test/demo_data/` exists; re-run `python test/generate_demo_data.py` |
+| Uncertainty cache error in demo | Re-run `python test/generate_demo_data.py` |
+
+---
+
+## Requirements summary
+
+| Package | Min version | Notes |
+|---------|-------------|-------|
+| Python | 3.11 | 3.9 also tested |
+| streamlit | 1.36 | |
+| xarray | 2024.1 | NetCDF reading |
+| netcdf4 | 1.6 | xarray engine |
+| numpy | 1.26 | |
+| scipy | 1.13 | Interpolation, image smoothing |
+| matplotlib | latest | PNG rendering |
+| Pillow | latest | Image encoding |
+| plotly | 5.22 | Chart.js via Streamlit component |
+| geopandas | 0.14 | Coastline / region shapefiles |
+| shapely | latest | Geometry operations |
+| fiona | latest | Shapefile I/O |
+| rasterio | latest | Raster support |
+| cartopy | latest | Optional — CRS utilities |

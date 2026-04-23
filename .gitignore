@@ -1,11 +1,7 @@
-__pycache__/
-*.pyc
-.env
-.DS_Store
-*.egg-info/
-dist/
-build/
-.venv/
-venv/
-# large data — use Git LFS or exclude if too big
-# index_data/
+assets/frame_cache/
+assets/uncertainty_cache/
+pages/__pycache__/
+**/__pycache__/
+**/*.pyc
+*.log
+.streamlit/secrets.toml

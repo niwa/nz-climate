@@ -4,3 +4,11 @@ pandas>=2.2
 numpy>=1.26
 xarray>=2024.1
 netcdf4>=1.6
+matplotlib
+scipy>=1.13
+geopandas>=0.14
+fiona         
+rasterio     
+shapely           
+Pillow
+cartopy

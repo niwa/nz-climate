@@ -384,8 +384,9 @@ def _log_mode(indicator, is_change):
 # ── Frame cache ───────────────────────────────────────────────────────────────
 FRAME_CACHE_DIR_SD = Path("assets/frame_cache")
 FRAME_CACHE_DIR_DD = Path("assets/frame_cache_dd")
-FRAME_CACHE_DIR_SD.mkdir(parents=True, exist_ok=True)
-FRAME_CACHE_DIR_DD.mkdir(parents=True, exist_ok=True)
+if not _ON_CLOUD:
+    FRAME_CACHE_DIR_SD.mkdir(parents=True, exist_ok=True)
+    FRAME_CACHE_DIR_DD.mkdir(parents=True, exist_ok=True)
 FRAME_CACHE_DIR    = FRAME_CACHE_DIR_SD
 
 def _frame_cache_dir(method="sd"):
@@ -1624,7 +1625,11 @@ indicators_avail = APPROVED_INDICATORS
 if not indicators_avail:
     st.sidebar.warning("No data found for either downscaling method."); st.stop()
 
-_sc.html(f"""
+with st.sidebar:
+    logo_path = Path("logos/esnz_logo_horz_new.png")
+    if logo_path.exists(): st.image(str(logo_path))
+
+    _sc.html(f"""
 <style>
 body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:transparent; }}
 .lbl {{ font-size:13px; color:#31333f; font-weight:600; display:block; margin:0 0 6px; }}

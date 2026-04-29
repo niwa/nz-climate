@@ -1624,7 +1624,7 @@ indicators_avail = APPROVED_INDICATORS
 if not indicators_avail:
     st.sidebar.warning("No data found for either downscaling method."); st.stop()
 
-    _sc.html(f"""
+_sc.html(f"""
 <style>
 body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:transparent; }}
 .lbl {{ font-size:13px; color:#31333f; font-weight:600; display:block; margin:0 0 6px; }}

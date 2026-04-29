@@ -1600,10 +1600,14 @@ _MODEL_ENSEMBLE_MEAN = "Ensemble mean (all models)"
 import streamlit.components.v1 as _sc
 
 if "applied" not in st.session_state:
-    _seed_inds = list_indicators("historical", method="sd")
+    if _ON_CLOUD:
+        _seed_ind = APPROVED_INDICATORS[0]
+    else:
+        _seed_inds = list_indicators("historical", method="sd")
+        _seed_ind  = _seed_inds[0] if _seed_inds else "TX"
     st.session_state["applied"] = dict(
         ssp="ssp370", bp_tag="bp1995-2014",
-        indicator=_seed_inds[0] if _seed_inds else "TX",
+        indicator=_seed_ind,
         season=SEASON_ANN, model_choice=_MODEL_ENSEMBLE_MEAN,
     )
 if "method" not in st.session_state:

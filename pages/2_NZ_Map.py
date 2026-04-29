@@ -1591,7 +1591,7 @@ html,body{{margin:0;padding:0;height:{height}px;width:100%;position:relative;bac
 # ── Dependency guards ─────────────────────────────────────────────────────────
 if not HAS_XARRAY:   st.error("**`xarray` is not installed.**"); st.stop()
 if not HAS_PLOTLY:   st.error("**`plotly` is not installed.**"); st.stop()
-if not DATA_ROOT.exists():
+if not _ON_CLOUD and not DATA_ROOT.exists():
     st.error(f"Data directory **`{DATA_ROOT}`** not found.\n\nRun: `python test/generate_demo_data.py`"); st.stop()
 
 _MODEL_ENSEMBLE_MEAN = "Ensemble mean (all models)"

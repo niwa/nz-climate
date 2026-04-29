@@ -1818,6 +1818,23 @@ model_label  = selected_model_key if selected_model_key else "Ensemble mean"
 SNAPSHOTS_SD = build_timeline(indicator, bp_tag, ssp, season, method="sd")
 SNAPSHOTS_DD = build_timeline(indicator, bp_tag, ssp, season, method="dd")
 SNAPSHOTS = SNAPSHOTS_SD if SNAPSHOTS_SD else SNAPSHOTS_DD
+
+if not SNAPSHOTS and _ON_CLOUD:
+    # On cloud there are no .nc files — build timeline from uncertainty cache instead
+    _unc_tmp = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd")
+    if _unc_tmp is None:
+        _unc_tmp = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="dd")
+    if _unc_tmp is not None:
+        SNAPSHOTS = []
+        for yr in _unc_tmp["snap_years"]:
+            if yr < 2015:
+                SNAPSHOTS.append((f"Historical {bp_tag.replace('bp','').replace('-','–')}",
+                                  "historical", bp_tag, bp_tag, yr))
+            else:
+                fp = f"fp{int(yr)-9}-{int(yr)+10}"
+                SNAPSHOTS.append((f"{int(yr)-9}–{int(yr)+10}", ssp, fp, bp_tag, yr))
+        SNAPSHOTS = sorted(SNAPSHOTS, key=lambda x: x[4])
+
 if not SNAPSHOTS:
     st.error(f"No files found for indicator **{indicator}**, baseline **{bp_tag}**, season **{season}**."); st.stop()
 

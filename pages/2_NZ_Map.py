@@ -39,19 +39,18 @@ if _ON_CLOUD:
 
 DATA_ROOT = Path(os.environ.get(
     "NZMAP_DATA_ROOT",
-    "/esi/project/niwa03712/ML_Downscaled_CMIP6/NIWA-REMS_indicators/output_v3"))
 REC_ROOT  = Path(os.environ.get(
     "NZMAP_REC_ROOT",
-    "/esi/project/niwa03712/westphall/nz-climate/REC"))
+    ""))
 DATA_ROOT_DD = Path(os.environ.get(
     "NZMAP_DATA_ROOT_DD",
-    "/esi/project/niwa00018/gibsonp/pull_rapids/campbelli_pull_indicators/output"))
+    ""))
 REC_ROOT_DD  = Path(os.environ.get(
     "NZMAP_REC_ROOT_DD",
-    "/esi/project/niwa03712/westphall/nz-climate/REC_DD"))
+    ""))
 
 _DEMO_DATA_ROOT = Path("test/demo_data")
-_DEMO_MODE      = not DATA_ROOT.exists() and _DEMO_DATA_ROOT.exists()
+_DEMO_MODE = not DATA_ROOT.exists() and _DEMO_DATA_ROOT.exists() and not _ON_CLOUD
 if _DEMO_MODE:
     DATA_ROOT = DATA_ROOT_DD = REC_ROOT = REC_ROOT_DD = _DEMO_DATA_ROOT
 
@@ -1627,10 +1626,6 @@ indicators_avail = APPROVED_INDICATORS
 
 if not indicators_avail:
     st.sidebar.warning("No data found for either downscaling method."); st.stop()
-
-with st.sidebar:
-    logo_path = Path("logos/esnz_logo_horz_new.png")
-    if logo_path.exists(): st.image(str(logo_path))
 
     _sc.html(f"""
 <style>

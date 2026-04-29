@@ -1601,7 +1601,7 @@ import streamlit.components.v1 as _sc
 
 if "applied" not in st.session_state:
     if _ON_CLOUD:
-        _seed_ind = APPROVED_INDICATORS[0]
+        _seed_ind = "TX"
     else:
         _seed_inds = list_indicators("historical", method="sd")
         _seed_ind  = _seed_inds[0] if _seed_inds else "TX"

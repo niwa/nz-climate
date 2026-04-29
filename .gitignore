@@ -1,9 +1,13 @@
 assets/frame_cache/
 assets/uncertainty_cache/
+assets/frame_cache_dd/
+assets/uncertainty_cache_dd/
 pages/__pycache__/
 **/__pycache__/
 **/*.pyc
 *.log
 .streamlit/secrets.toml
 .ipynb_checkpoints/
+**/.ipynb_checkpoints/
+*.ipynb
 *.zip

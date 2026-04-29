@@ -37,6 +37,8 @@ _ON_CLOUD = not Path("assets/frame_cache").exists()
 if _ON_CLOUD:
     from blob_storage import load_pkl_blob, load_json_blob
 
+st.write(f"DEBUG: _ON_CLOUD={_ON_CLOUD}, frame_cache exists={Path('assets/frame_cache').exists()}")
+
 DATA_ROOT = Path(os.environ.get("NZMAP_DATA_ROOT", "/nonexistent/data"))
 REC_ROOT = Path(os.environ.get("NZMAP_REC_ROOT", "/nonexistent/rec"))
 DATA_ROOT_DD = Path(os.environ.get("NZMAP_DATA_ROOT_DD", "/nonexistent/data_dd"))

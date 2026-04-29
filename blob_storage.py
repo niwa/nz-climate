@@ -32,8 +32,12 @@ def load_pkl_blob(local_path: Path):
         with open(cache_path, "rb") as f:
             return pickle.load(f)
     try:
-        data = get_container_client().download_blob(_blob_name(local_path)).readall()
-    except Exception:
+        blob_name = _blob_name(local_path)
+        print(f"DEBUG: downloading blob: {blob_name}")
+        data = get_container_client().download_blob(blob_name).readall()
+        print(f"DEBUG: got {len(data)} bytes")
+    except Exception as e:
+        print(f"DEBUG: blob error: {e}")
         return None
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with open(cache_path, "wb") as f:

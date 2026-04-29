@@ -12,3 +12,5 @@ rasterio
 shapely           
 Pillow
 cartopy
+azure-storage-blob
+azure-identity

@@ -18,6 +18,14 @@ header[data-testid="stHeader"] { display: none; }
 div.block-container { padding-top: 2.5rem; }
 [data-baseweb="tooltip"]  { pointer-events: none !important; }
 [role="tooltip"]           { pointer-events: none !important; }
+/* Re-show the sidebar collapse/expand button even though header is hidden */
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    position: fixed;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 999999;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -410,6 +418,8 @@ def _load_frame_cache(key, method="sd"):
     except Exception: return None
 
 def _save_frame_cache(key, payload, method="sd"):
+    if _ON_CLOUD:
+        return  # don't try to save to disk on cloud
     path = _frame_cache_dir(method) / f"{key}.pkl"
     with open(path, "wb") as f: pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -1700,10 +1710,20 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
             label_visibility="collapsed", index=_ind_idx, key="_sel_indicator")
 
         _applied_ind = st.session_state["applied"]["indicator"]
-        _seas_sd = set(discover_seasons("historical", _applied_ind, method="sd"))
-        _seas_dd = set(discover_seasons("historical", _applied_ind, method="dd"))
-        _seasons_avail = sorted(_seas_sd | _seas_dd,
-                                key=lambda s: list(SEASON_LABELS).index(s) if s in SEASON_LABELS else 99)
+        if _ON_CLOUD:
+            _seasons_avail = []
+            for _s in SEASON_LABELS:
+                _probe = (load_uncertainty_cache(_applied_ind, _cfg["ssp"], _cfg["bp_tag"], _s, method="sd")
+                          or load_uncertainty_cache(_applied_ind, _cfg["ssp"], _cfg["bp_tag"], _s, method="dd"))
+                if _probe is not None:
+                    _seasons_avail.append(_s)
+            if not _seasons_avail:
+                _seasons_avail = [SEASON_ANN]
+        else:
+            _seas_sd = set(discover_seasons("historical", _applied_ind, method="sd"))
+            _seas_dd = set(discover_seasons("historical", _applied_ind, method="dd"))
+            _seasons_avail = sorted(_seas_sd | _seas_dd,
+                                    key=lambda s: list(SEASON_LABELS).index(s) if s in SEASON_LABELS else 99)SEASON_LABELS else 99)
         if len(_seasons_avail) > 1:
             st.subheader("Season")
             _seas_default = st.session_state["applied"]["season"]
@@ -1716,10 +1736,18 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
 
         st.subheader("Model")
         _cfg = st.session_state["applied"]
-        _models_sd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
-                                         _cfg["season"], method="sd"))
-        _models_dd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
-                                         _cfg["season"], method="dd"))
+        if _ON_CLOUD:
+            _unc_sd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
+                                                   _cfg["bp_tag"], _cfg["season"], method="sd")
+            _unc_dd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
+                                                   _cfg["bp_tag"], _cfg["season"], method="dd")
+            _models_sd = set(_unc_sd_probe["model_change_vals"].keys()) if _unc_sd_probe else set()
+            _models_dd = set(_unc_dd_probe["model_change_vals"].keys()) if _unc_dd_probe else set()
+        else:
+            _models_sd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
+                                             _cfg["season"], method="sd"))
+            _models_dd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
+                                             _cfg["season"], method="dd"))
         _avail_models = sorted(_models_sd | _models_dd)
         _shared_models = _models_sd & _models_dd
 

@@ -14,18 +14,23 @@ st.markdown("""
 <style>
 html, body, [class*="css"]  { font-size: 14px !important; }
 h1, h2, h3, h4 { font-size: 1.2rem !important; line-height: 1.2 !important; }
-header[data-testid="stHeader"] { display: none; }
+header[data-testid="stHeader"] {
+    visibility: hidden;
+    height: 0px !important;
+    min-height: 0px !important;
+    overflow: hidden !important;
+}
+[data-testid="collapsedControl"] {
+    visibility: visible !important;
+    display: flex !important;
+    position: fixed !important;
+    top: 0.5rem !important;
+    left: 0.5rem !important;
+    z-index: 999999 !important;
+}
 div.block-container { padding-top: 2.5rem; }
 [data-baseweb="tooltip"]  { pointer-events: none !important; }
 [role="tooltip"]           { pointer-events: none !important; }
-/* Re-show sidebar collapse/expand button even though header is hidden */
-[data-testid="collapsedControl"] {
-    display: flex !important;
-    position: fixed;
-    top: 0.5rem;
-    left: 0.5rem;
-    z-index: 999999;
-}
 </style>
 """, unsafe_allow_html=True)
 

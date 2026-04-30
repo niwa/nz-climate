@@ -23,25 +23,13 @@ header[data-testid="stHeader"] {
 div.block-container { padding-top: 2.5rem; }
 [data-baseweb="tooltip"]  { pointer-events: none !important; }
 [role="tooltip"]           { pointer-events: none !important; }
+[data-testid="collapsedControl"] { display: none !important; }
+section[data-testid="stSidebar"] {
+    transform: none !important;
+    min-width: 21rem !important;
+    width: 21rem !important;
+}
 </style>
-<script>
-(function() {
-    function fixBtn() {
-        var btn = document.querySelector('[data-testid="collapsedControl"]');
-        if (!btn) return;
-        btn.style.setProperty('visibility', 'visible', 'important');
-        btn.style.setProperty('display',    'flex',    'important');
-        btn.style.setProperty('position',   'fixed',   'important');
-        btn.style.setProperty('top',        '0.5rem',  'important');
-        btn.style.setProperty('left',       '0.5rem',  'important');
-        btn.style.setProperty('z-index',    '999999',  'important');
-    }
-    // Run immediately and on every DOM mutation so it survives Streamlit re-renders
-    fixBtn();
-    var obs = new MutationObserver(fixBtn);
-    obs.observe(document.body, { childList: true, subtree: true });
-})();
-</script>
 """, unsafe_allow_html=True)
 
 try:

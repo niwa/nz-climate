@@ -18,7 +18,7 @@ header[data-testid="stHeader"] { display: none; }
 div.block-container { padding-top: 2.5rem; }
 [data-baseweb="tooltip"]  { pointer-events: none !important; }
 [role="tooltip"]           { pointer-events: none !important; }
-/* Re-show the sidebar collapse/expand button even though header is hidden */
+/* Re-show sidebar collapse/expand button even though header is hidden */
 [data-testid="collapsedControl"] {
     display: flex !important;
     position: fixed;
@@ -40,15 +40,15 @@ try:
     from shapely.ops import unary_union; HAS_GEOPANDAS = True
 except ImportError:        HAS_GEOPANDAS = False
 
-# ── Data roots ───────────────────────────────────────────────────────────────
+# ── Data roots ────────────────────────────────────────────────────────────────
 _ON_CLOUD = not Path("assets/frame_cache").exists()
 if _ON_CLOUD:
     from blob_storage import load_pkl_blob, load_json_blob
 
-DATA_ROOT = Path(os.environ.get("NZMAP_DATA_ROOT", "/nonexistent/data"))
-REC_ROOT = Path(os.environ.get("NZMAP_REC_ROOT", "/nonexistent/rec"))
+DATA_ROOT    = Path(os.environ.get("NZMAP_DATA_ROOT",    "/nonexistent/data"))
+REC_ROOT     = Path(os.environ.get("NZMAP_REC_ROOT",     "/nonexistent/rec"))
 DATA_ROOT_DD = Path(os.environ.get("NZMAP_DATA_ROOT_DD", "/nonexistent/data_dd"))
-REC_ROOT_DD = Path(os.environ.get("NZMAP_REC_ROOT_DD", "/nonexistent/rec_dd"))
+REC_ROOT_DD  = Path(os.environ.get("NZMAP_REC_ROOT_DD",  "/nonexistent/rec_dd"))
 
 _DEMO_DATA_ROOT = Path("test/demo_data")
 _DEMO_MODE = not DATA_ROOT.exists() and _DEMO_DATA_ROOT.exists() and not _ON_CLOUD
@@ -110,6 +110,30 @@ _PRECIP_INDICATORS_GROUP = {"DD1mm","PR","R99p","R99pVAL","R99pVALWet","RR1mm","
 _TEMP_INDICATORS_GROUP   = {"FD","TN","TNn","TX","TX25","TX30","TXx"}
 _WIND_INDICATORS_GROUP   = {"sfcwind","Wd10","Wd25","Wd99pVAL","Wx1day"}
 _SEPARATOR_PREFIX        = "╌╌"
+
+# ── Coordinate helper ─────────────────────────────────────────────────────────
+def _pick_coord(ds, priority):
+    """Return the best-matching coordinate name from an xarray Dataset.
+
+    Prefers 2-D arrays (true geographic lat/lon) over 1-D rotated-pole axes
+    (rlat/rlon) so that CCAM dynamical-downscaling files are handled correctly.
+    """
+    candidates = list(ds.coords) + list(ds.dims) + list(ds.data_vars)
+    # First pass: prefer 2-D geographic arrays
+    for name in priority:
+        for c in candidates:
+            if c.lower() == name:
+                try:
+                    if ds[c].ndim == 2:
+                        return c
+                except Exception:
+                    pass
+    # Second pass: accept any dimensionality
+    for name in priority:
+        for c in candidates:
+            if c.lower() == name:
+                return c
+    return None
 
 # ── File discovery ────────────────────────────────────────────────────────────
 def _indicator_root(indicator, method="sd"):
@@ -240,14 +264,15 @@ def load_ensemble_mean(scenario, indicator, fp_tag, bp_tag, season,
         else: ungrouped.append(f)
     lats = lons = None
     model_means = []
+
     def _load_array(f):
         nonlocal lats, lons
         try:
             ds = xr.open_dataset(f, engine="netcdf4", mask_and_scale=False)
-            lat_names = [c for c in list(ds.coords)+list(ds.dims) if c.lower() in ("lat","latitude","y","rlat")]
-            lon_names = [c for c in list(ds.coords)+list(ds.dims) if c.lower() in ("lon","longitude","x","rlon")]
-            if not lat_names or not lon_names: ds.close(); return None
-            lat_name, lon_name = lat_names[0], lon_names[0]
+            lat_name = _pick_coord(ds, ["lat", "latitude", "rlat", "y"])
+            lon_name = _pick_coord(ds, ["lon", "longitude", "rlon", "x"])
+            if not lat_name or not lon_name:
+                ds.close(); return None
             data_vars = [v for v in ds.data_vars if v.lower() not in ("lat","lon","time")]
             if not data_vars: ds.close(); return None
             chosen_var = var_name if (var_name and var_name in ds.data_vars) else data_vars[0]
@@ -258,9 +283,19 @@ def load_ensemble_mean(scenario, indicator, fp_tag, bp_tag, season,
             fv = da.attrs.get("_FillValue", da.attrs.get("missing_value"))
             if fv is not None: arr[arr == float(fv)] = np.nan
             arr = arr * float(da.attrs.get("scale_factor", 1.0)) + float(da.attrs.get("add_offset", 0.0))
-            if lats is None: lats = ds[lat_name].values; lons = ds[lon_name].values
+            if lats is None:
+                raw_lats = ds[lat_name].values
+                raw_lons = ds[lon_name].values
+                if raw_lats.ndim == 2:
+                    lats = raw_lats.ravel()
+                    lons = raw_lons.ravel()
+                else:
+                    lg, ng = np.meshgrid(raw_lats, raw_lons, indexing="ij")
+                    lats = lg.ravel()
+                    lons = ng.ravel()
             ds.close(); return arr
         except Exception: return None
+
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -395,7 +430,7 @@ FRAME_CACHE_DIR_DD = Path("assets/frame_cache_dd")
 if not _ON_CLOUD:
     FRAME_CACHE_DIR_SD.mkdir(parents=True, exist_ok=True)
     FRAME_CACHE_DIR_DD.mkdir(parents=True, exist_ok=True)
-FRAME_CACHE_DIR    = FRAME_CACHE_DIR_SD
+FRAME_CACHE_DIR = FRAME_CACHE_DIR_SD
 
 def _frame_cache_dir(method="sd"):
     return FRAME_CACHE_DIR_DD if method == "dd" else FRAME_CACHE_DIR_SD
@@ -419,7 +454,7 @@ def _load_frame_cache(key, method="sd"):
 
 def _save_frame_cache(key, payload, method="sd"):
     if _ON_CLOUD:
-        return  # don't try to save to disk on cloud
+        return
     path = _frame_cache_dir(method) / f"{key}.pkl"
     with open(path, "wb") as f: pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -568,9 +603,9 @@ def prerender_snapshots(lat_v, lon_v, snap_data_stacked, vmin, vmax,
     _, _near_idx = distance_transform_edt(~land_mask, return_indices=True)
     near_row, near_col = _near_idx[0], _near_idx[1]
     _hard_alpha = land_mask.astype(np.float32)
-    # Adaptive sigma — scales with grid spacing so DD coast coverage matches SD
+    # Slightly higher floor and multiplier for finer DD grids
     _grid_spacing_px = grid_spacing_rad / (lon_max_rad - lon_min_rad) * out_w
-    _SIGMA = max(4.0, _grid_spacing_px * 1.8)
+    _SIGMA = max(6.0, _grid_spacing_px * 2.2)
 
     def _smooth_nan(arr2d):
         valid = np.isfinite(arr2d) & land_mask
@@ -640,7 +675,6 @@ def render_colorbar_b64(vmin, vmax, colorscale, units, indicator="", is_change=F
 # build_html_player
 # ============================================================================
 def build_html_player(
-    # SD data
     sd_snap_b64, sd_snap_b64_abs,
     sd_colorbar_b64, sd_colorbar_b64_abs,
     sd_hover_vals, sd_hover_abs_vals,
@@ -648,7 +682,6 @@ def build_html_player(
     sd_abs_chart_p5, sd_abs_chart_p25, sd_abs_chart_p75, sd_abs_chart_p95, sd_abs_chart_ens,
     sd_chart_ymin, sd_chart_ymax, sd_abs_chart_ymin, sd_abs_chart_ymax,
     sd_snap_fp_ranges,
-    # DD data
     dd_snap_b64, dd_snap_b64_abs,
     dd_colorbar_b64, dd_colorbar_b64_abs,
     dd_hover_vals, dd_hover_abs_vals,
@@ -656,10 +689,8 @@ def build_html_player(
     dd_abs_chart_p5, dd_abs_chart_p25, dd_abs_chart_p75, dd_abs_chart_p95, dd_abs_chart_ens,
     dd_chart_ymin, dd_chart_ymax, dd_abs_chart_ymin, dd_abs_chart_ymax,
     dd_snap_fp_ranges,
-    # Per-method hover point grids
     sd_hover_lats, sd_hover_lons,
     dd_hover_lats, dd_hover_lons,
-    # Shared
     snap_years, frame_years, snap_frame_idx, snap_labels,
     hover_units, abs_units,
     lat_min, lat_max, lon_min, lon_max,
@@ -690,46 +721,39 @@ def build_html_player(
     frame_years_js = _json.dumps(frame_years)
     snap_idx_js    = _json.dumps(snap_frame_idx)
     snap_labels_js = _json.dumps(snap_labels)
-
     sd_hover_lats_js = _json.dumps([round(v, 4) for v in sd_hover_lats])
     sd_hover_lons_js = _json.dumps([round(v, 4) for v in sd_hover_lons])
     dd_hover_lats_js = _json.dumps([round(v, 4) for v in dd_hover_lats])
     dd_hover_lons_js = _json.dumps([round(v, 4) for v in dd_hover_lons])
-
-    sd_snap_b64_js     = _json.dumps(sd_snap_b64)
-    sd_snap_abs_js     = _json.dumps(sd_snap_b64_abs)
-    dd_snap_b64_js     = _json.dumps(dd_snap_b64)
-    dd_snap_abs_js     = _json.dumps(dd_snap_b64_abs)
+    sd_snap_b64_js   = _json.dumps(sd_snap_b64)
+    sd_snap_abs_js   = _json.dumps(sd_snap_b64_abs)
+    dd_snap_b64_js   = _json.dumps(dd_snap_b64)
+    dd_snap_abs_js   = _json.dumps(dd_snap_b64_abs)
     country_geojson_js = country_geojson if country_geojson else "null"
     regions_geojson_js = regions_geojson if regions_geojson else "null"
     init_method_js     = _json.dumps(initial_method)
-
     sd_vals_js     = _enc(sd_hover_vals)
     sd_abs_vals_js = _enc(sd_hover_abs_vals)
     dd_vals_js     = _enc(dd_hover_vals)
     dd_abs_vals_js = _enc(dd_hover_abs_vals)
-
     sd_fp_ranges_js = _json.dumps(sd_snap_fp_ranges if sd_snap_fp_ranges else snap_labels)
     dd_fp_ranges_js = _json.dumps(dd_snap_fp_ranges if dd_snap_fp_ranges else snap_labels)
-
-    sd_p5_js    = _enc(sd_chart_p5);    sd_p25_js   = _enc(sd_chart_p25)
-    sd_p75_js   = _enc(sd_chart_p75);   sd_p95_js   = _enc(sd_chart_p95)
-    sd_ens_js   = _enc(sd_chart_ens)
-    dd_p5_js    = _enc(dd_chart_p5);    dd_p25_js   = _enc(dd_chart_p25)
-    dd_p75_js   = _enc(dd_chart_p75);   dd_p95_js   = _enc(dd_chart_p95)
-    dd_ens_js   = _enc(dd_chart_ens)
-    sd_ap5_js   = _enc(sd_abs_chart_p5);  sd_ap25_js  = _enc(sd_abs_chart_p25)
-    sd_ap75_js  = _enc(sd_abs_chart_p75); sd_ap95_js  = _enc(sd_abs_chart_p95)
-    sd_aens_js  = _enc(sd_abs_chart_ens)
-    dd_ap5_js   = _enc(dd_abs_chart_p5);  dd_ap25_js  = _enc(dd_abs_chart_p25)
-    dd_ap75_js  = _enc(dd_abs_chart_p75); dd_ap95_js  = _enc(dd_abs_chart_p95)
-    dd_aens_js  = _enc(dd_abs_chart_ens)
-
-    sd_ymin_js  = _json.dumps(sd_chart_ymin);    sd_ymax_js  = _json.dumps(sd_chart_ymax)
-    dd_ymin_js  = _json.dumps(dd_chart_ymin);    dd_ymax_js  = _json.dumps(dd_chart_ymax)
+    sd_p5_js  = _enc(sd_chart_p5);  sd_p25_js = _enc(sd_chart_p25)
+    sd_p75_js = _enc(sd_chart_p75); sd_p95_js = _enc(sd_chart_p95)
+    sd_ens_js = _enc(sd_chart_ens)
+    dd_p5_js  = _enc(dd_chart_p5);  dd_p25_js = _enc(dd_chart_p25)
+    dd_p75_js = _enc(dd_chart_p75); dd_p95_js = _enc(dd_chart_p95)
+    dd_ens_js = _enc(dd_chart_ens)
+    sd_ap5_js  = _enc(sd_abs_chart_p5);  sd_ap25_js = _enc(sd_abs_chart_p25)
+    sd_ap75_js = _enc(sd_abs_chart_p75); sd_ap95_js = _enc(sd_abs_chart_p95)
+    sd_aens_js = _enc(sd_abs_chart_ens)
+    dd_ap5_js  = _enc(dd_abs_chart_p5);  dd_ap25_js = _enc(dd_abs_chart_p25)
+    dd_ap75_js = _enc(dd_abs_chart_p75); dd_ap95_js = _enc(dd_abs_chart_p95)
+    dd_aens_js = _enc(dd_abs_chart_ens)
+    sd_ymin_js  = _json.dumps(sd_chart_ymin);  sd_ymax_js  = _json.dumps(sd_chart_ymax)
+    dd_ymin_js  = _json.dumps(dd_chart_ymin);  dd_ymax_js  = _json.dumps(dd_chart_ymax)
     sd_aymin_js = _json.dumps(sd_abs_chart_ymin); sd_aymax_js = _json.dumps(sd_abs_chart_ymax)
     dd_aymin_js = _json.dumps(dd_abs_chart_ymin); dd_aymax_js = _json.dumps(dd_abs_chart_ymax)
-
     sd_cb_chg_js = _json.dumps(f"data:image/png;base64,{sd_colorbar_b64}")
     sd_cb_abs_js = _json.dumps(f"data:image/png;base64,{sd_colorbar_b64_abs}")
     dd_cb_chg_js = _json.dumps(f"data:image/png;base64,{dd_colorbar_b64}")
@@ -859,7 +883,6 @@ body {{ font-family:Arial,sans-serif; background:white; overflow-x:hidden; }}
 <script>
 (function() {{
 
-// ── Inlined data ──────────────────────────────────────────────────────────────
 var SNAP_YEARS   = {snap_years_js};
 var YEARS        = {frame_years_js};
 var SNAP_IDX     = {snap_idx_js};
@@ -878,13 +901,8 @@ var LON_MIN = Math.min(BOUNDS.sd.lonMin, BOUNDS.dd.lonMin);
 var LON_MAX = Math.max(BOUNDS.sd.lonMax, BOUNDS.dd.lonMax);
 var CANVAS_W = 1200, CANVAS_H = 1800;
 
-// Per-method hover grids — SD at 12 km, DD at 5 km native resolution
 var HOVER_LATS = {{ sd: {sd_hover_lats_js}, dd: {dd_hover_lats_js} }};
 var HOVER_LONS = {{ sd: {sd_hover_lons_js}, dd: {dd_hover_lons_js} }};
-
-// Cross-index maps: for each point in one method, the index of the nearest
-// point in the other method's grid. Used to align "other" chart bands.
-
 var HOVER_UNITS  = {hover_units_js};
 var ABS_UNITS    = {abs_units_js};
 var HOVER_THRESH = BOUNDS[{init_method_js}].thresh;
@@ -927,7 +945,6 @@ var _storedMethod = null;
 try {{ _storedMethod = localStorage.getItem('nzmap_active_method'); }} catch(e) {{}}
 var activeMethod = (_storedMethod === 'sd' || _storedMethod === 'dd') ? _storedMethod : {init_method_js};
 
-// ── Leaflet maps ──────────────────────────────────────────────────────────────
 var mapOpts = {{
   center: [{center_lat:.3f}, {center_lon:.3f}],
   zoom: 5, minZoom: 5, maxZoom: 9,
@@ -966,7 +983,6 @@ function addBorders(m) {{
 }}
 addBorders(mapA); addBorders(mapB);
 
-// ── Canvas overlays ───────────────────────────────────────────────────────────
 function makeOverlay(m) {{
   m.createPane('dataOverlay');
   var pane = m.getPane('dataOverlay');
@@ -1049,7 +1065,6 @@ function updateColorbars() {{
   document.getElementById('cbar-abs').src = COLORBARS[activeMethod].abs;
 }}
 
-// ── Map sync ──────────────────────────────────────────────────────────────────
 var _syncing = false;
 mapA.on('move', scheduleReposA); mapB.on('move', scheduleReposB);
 mapA.on('moveend', function() {{ if (_syncing) return; _syncing=true; mapB.setView(mapA.getCenter(),mapA.getZoom(),{{animate:false}}); repositionCanvas(mapB,ovB); _redrawBoth(); _syncing=false; }});
@@ -1072,7 +1087,6 @@ mapA.on('zoomend', function(){{ ovA.oc.style.transition=''; ovA.oc.style.transfo
 mapB.on('zoomend', function(){{ ovB.oc.style.transition=''; ovB.oc.style.transform=''; scheduleReposA(); scheduleReposB(); }});
 repositionCanvas(mapA,ovA); repositionCanvas(mapB,ovB);
 
-// ── Frame logic ───────────────────────────────────────────────────────────────
 var slider   = document.getElementById('timeline-slider');
 var periodEl = document.getElementById('abs-panel-title');
 var playBtn  = document.getElementById('play-btn');
@@ -1105,7 +1119,6 @@ function showFrame(fi) {{
   if (myChartAbs)    myChartAbs.update('none');
 }}
 
-// ── Method toggle ─────────────────────────────────────────────────────────────
 window.switchMethod = function(mth) {{
   if (mth === activeMethod) return;
   if (_loadCounts[mth].chg < _loadTotals[mth].chg ||
@@ -1118,7 +1131,7 @@ window.switchMethod = function(mth) {{
   repositionCanvas(mapB, ovB);
   showFrame(current);
   if (_pinLat !== null && _pinLon !== null) {{
-    var nn = nearestPoint(_pinLat, _pinLon);  // now queries new method's grid
+    var nn = nearestPoint(_pinLat, _pinLon);
     _pinIdx = nn.idx;
     if (myChartChange && _pinIdx >= 0) {{
       showChangeChartPanel(_pinIdx, HOVER_LATS[mth][_pinIdx], HOVER_LONS[mth][_pinIdx]);
@@ -1130,7 +1143,6 @@ window.switchMethod = function(mth) {{
   try {{ window.parent.postMessage({{type:'nzmap_method', method:mth}}, '*'); }} catch(e) {{}}
 }};
 
-// ── Playback ──────────────────────────────────────────────────────────────────
 var playing = false, timer = null;
 function tick() {{ if (!playing) return; if (current>=N-1) {{ pause(); return; }} showFrame(current+1); timer=setTimeout(tick,MS); }}
 function play()  {{ if (current>=N-1) showFrame(0); playing=true; playBtn.textContent='⏸ Pause'; timer=setTimeout(tick,MS); }}
@@ -1148,7 +1160,6 @@ window.addEventListener('message', function(e) {{
   if (e.data.type === 'nzmap_method' && e.data.method) {{ switchMethod(e.data.method); }}
 }});
 
-// ── Ticks ─────────────────────────────────────────────────────────────────────
 function buildTicks() {{
   tickRow.innerHTML = '';
   var thumbR = 8, sliderRect = slider.getBoundingClientRect(), rowRect = tickRow.getBoundingClientRect();
@@ -1175,7 +1186,6 @@ setTimeout(buildTicks, 200);
 window.addEventListener('resize', buildTicks);
 window.addEventListener('resize', updateChartPanelLimits);
 
-// ── Hover ─────────────────────────────────────────────────────────────────────
 var tip = document.getElementById('hover-tip');
 var tipCoord = document.getElementById('tip-coord');
 var tipChange = document.getElementById('tip-change');
@@ -1192,7 +1202,6 @@ function interpVal(vals, ptIdx, fi) {{
   return vals[vals.length-1][ptIdx];
 }}
 
-// Use active method's native grid for nearest-point lookup
 function nearestPoint(lat, lon) {{
   var lats = HOVER_LATS[activeMethod];
   var lons = HOVER_LONS[activeMethod];
@@ -1225,8 +1234,6 @@ function onMapMousemove(e) {{
   if (_hThrottle) return; _hThrottle=setTimeout(function(){{_hThrottle=null;}},30);
   var nn = nearestPoint(e.latlng.lat, e.latlng.lng);
   if (nn.dist > HOVER_THRESH) {{ tip.style.display='none'; return; }}
-  // Guard: use abs value as land/ocean indicator — abs is NaN at ocean/masked
-  // points even when change is 0.0 (e.g. historical snapshot of REC indicators)
   var absVals = HOVER_VALS[activeMethod].abs;
   if (absVals) {{
     var absVal = interpVal(absVals, nn.idx, current);
@@ -1244,7 +1251,6 @@ mapA.on('mousemove', onMapMousemove); mapB.on('mousemove', onMapMousemove);
 mapA.on('mouseout', function(){{tip.style.display='none';}});
 mapB.on('mouseout', function(){{tip.style.display='none';}});
 
-// ── Chart plugins ─────────────────────────────────────────────────────────────
 var vertLinePlugin = {{
   id:'vertLine',
   afterDraw: function(chart) {{
@@ -1331,9 +1337,6 @@ var bandPlugin = {{
   }}
 }};
 
-// pinIdx is always in the active method's native coordinate space.
-// otherPinIdx maps it to the geographically nearest point in the other
-// method's grid using the precomputed CROSS_IDX lookup.
 function buildDatasets(panelType, pinIdx) {{
   var m   = activeMethod;
   var oth = m==='sd' ? 'dd' : 'sd';
@@ -1341,8 +1344,22 @@ function buildDatasets(panelType, pinIdx) {{
   var otherCD = CHART_DATA[oth][panelType];
   var snapYrs = SNAP_IDX.map(function(i){{ return YEARS[i]; }});
 
-  // Map pinIdx to the other method's nearest point
-  var otherPinIdx = pinIdx;
+  // Geographic nearest-point remap: pinIdx is in active method's grid.
+  // A direct index reuse is wrong — SD ~3k pts, DD ~60k pts, so index N
+  // in one grid points to a completely different location in the other.
+  var otherPinIdx = -1;
+  if (otherCD) {{
+    var _pLat  = HOVER_LATS[m][pinIdx];
+    var _pLon  = HOVER_LONS[m][pinIdx];
+    var _oLats = HOVER_LATS[oth];
+    var _oLons = HOVER_LONS[oth];
+    var _bd = Infinity;
+    for (var _oi = 0; _oi < _oLats.length; _oi++) {{
+      var _od = (_oLats[_oi]-_pLat)*(_oLats[_oi]-_pLat) +
+                (_oLons[_oi]-_pLon)*(_oLons[_oi]-_pLon);
+      if (_od < _bd) {{ _bd = _od; otherPinIdx = _oi; }}
+    }}
+  }}
 
   var primColor  = m==='sd' ? '#4a90d9' : '#22a822';
   var otherColor = m==='sd' ? '#22a822' : '#4a90d9';
@@ -1364,12 +1381,11 @@ function buildDatasets(panelType, pinIdx) {{
     pushBandRole('primary50top','', snapYrs.map(function(yr,i){{ return {{x:yr,y:primCD.p75[i][pinIdx]}}; }}));
     pushBandRole('primary50bot','50% interval', snapYrs.map(function(yr,i){{ return {{x:yr,y:primCD.p25[i][pinIdx]}}; }}));
   }}
-  // Other method bands — use geographically remapped index
-  if (otherCD && otherCD.p95) {{
+  if (otherCD && otherCD.p95 && otherPinIdx >= 0) {{
     pushBandRole('other90top','', snapYrs.map(function(yr,i){{ return {{x:yr,y:otherCD.p95[i][otherPinIdx]}}; }}));
     pushBandRole('other90bot',(oth==='sd'?'SD':'DD')+' 90%', snapYrs.map(function(yr,i){{ return {{x:yr,y:otherCD.p5[i][otherPinIdx]}}; }}));
   }}
-  if (otherCD && otherCD.p75) {{
+  if (otherCD && otherCD.p75 && otherPinIdx >= 0) {{
     pushBandRole('other50top','', snapYrs.map(function(yr,i){{ return {{x:yr,y:otherCD.p75[i][otherPinIdx]}}; }}));
     pushBandRole('other50bot',(oth==='sd'?'SD':'DD')+' 50%', snapYrs.map(function(yr,i){{ return {{x:yr,y:otherCD.p25[i][otherPinIdx]}}; }}));
   }}
@@ -1387,9 +1403,8 @@ function buildDatasets(panelType, pinIdx) {{
       borderColor:m==='sd'?'#1a4a9a':'#145214', backgroundColor:m==='sd'?'#1a4a9a':'#145214',
       borderWidth:2, pointRadius:4, fill:false, tension:0.35}});
   }}
-  // Other method ensemble mean — remapped index
   var otherEnsData = (otherCD && otherCD.ens) || (otherCD && otherHoverVals);
-  if (otherEnsData) {{
+  if (otherEnsData && otherPinIdx >= 0) {{
     ds.push({{label:(oth==='sd'?'SD':'DD')+' ensemble mean',
       data:snapYrs.map(function(yr,i){{ return {{x:yr,y:otherEnsData[i][otherPinIdx]}}; }}),
       borderColor:otherColor, backgroundColor:otherColor,
@@ -1472,9 +1487,7 @@ function combinedYRange(panelType) {{
 var _pinLat = null, _pinLon = null;
 
 function showChangeChartPanel(ptIdx, lat, lon) {{
-  _pinIdx = ptIdx;
-  _pinLat = lat;
-  _pinLon = lon; 
+  _pinIdx = ptIdx; _pinLat = lat; _pinLon = lon;
   if (chartPanelChange.style.display==='none'||!chartPanelChange.style.display) {{
     chartPanelChange.style.width='360px'; chartPanelChange.style.height='240px';
   }}
@@ -1492,9 +1505,7 @@ function showChangeChartPanel(ptIdx, lat, lon) {{
 }}
 
 function showAbsChartPanel(ptIdx, lat, lon) {{
-  _pinIdx = ptIdx;
-  _pinLat = lat;  
-  _pinLon = lon; 
+  _pinIdx = ptIdx; _pinLat = lat; _pinLon = lon;
   if (chartPanelAbs.style.display==='none'||!chartPanelAbs.style.display) {{
     chartPanelAbs.style.width='360px'; chartPanelAbs.style.height='240px';
   }}
@@ -1511,20 +1522,16 @@ function showAbsChartPanel(ptIdx, lat, lon) {{
   chartPanelAbs.style.display='flex';
 }}
 
-// Ocean-click guard: only open chart if the clicked point has valid data
 mapA.on('click', function(e) {{
   var nn = nearestPoint(e.latlng.lat, e.latlng.lng);
   if (nn.dist > HOVER_THRESH) return;
   var chgVals = HOVER_VALS[activeMethod].chg;
   var absVals = HOVER_VALS[activeMethod].abs;
   if (!chgVals) return;
-  // Secondary guard: check abs value — change=0.0 at historical is finite
-  // even for ocean-adjacent points, but abs values are NaN at marginal pixels
   if (absVals) {{
     var absVal = interpVal(absVals, nn.idx, current);
     if (!isFinite(absVal)) return;
   }} else {{
-    // No abs data — fall back to change value check
     var val = interpVal(chgVals, nn.idx, current);
     if (!isFinite(val)) return;
   }}
@@ -1547,7 +1554,6 @@ document.getElementById('abs-chart-close').addEventListener('click', function() 
   chartPanelAbs.style.display='none'; if(myChartAbs){{myChartAbs.destroy();myChartAbs=null;}}
 }});
 
-// ── Draggable panels ──────────────────────────────────────────────────────────
 function makeDraggable(panel, wrapId) {{
   var dragX=0, dragY=0, startL=0, startT=0, dragging=false;
   panel.addEventListener('mousedown', function(e) {{
@@ -1607,39 +1613,52 @@ if not _ON_CLOUD and not DATA_ROOT.exists():
 
 _MODEL_ENSEMBLE_MEAN = "Ensemble mean (all models)"
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-import streamlit.components.v1 as _sc
+# ── Module import guard ───────────────────────────────────────────────────────
+# precompute_*.py scripts import this file via importlib.exec_module() to reuse
+# functions and constants. Without this guard the entire app body below executes
+# during that import — crashing because there is no Streamlit session or caches.
+_STREAMLIT_ACTIVE = False
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx as _get_ctx
+    _STREAMLIT_ACTIVE = _get_ctx() is not None
+except Exception:
+    pass
 
-if "applied" not in st.session_state:
-    if _ON_CLOUD:
-        _seed_ind = "TX"
-    else:
-        _seed_inds = list_indicators("historical", method="sd")
-        _seed_ind  = _seed_inds[0] if _seed_inds else "TX"
-    st.session_state["applied"] = dict(
-        ssp="ssp370", bp_tag="bp1995-2014",
-        indicator=_seed_ind,
-        season=SEASON_ANN, model_choice=_MODEL_ENSEMBLE_MEAN,
-    )
-if "method" not in st.session_state:
-    st.session_state["method"] = "sd"
+if _STREAMLIT_ACTIVE:
 
-_current_method = st.session_state["method"]
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+    import streamlit.components.v1 as _sc
 
-APPROVED_INDICATORS = [
-    "DD1mm", "FD", "PR", "REC_Rx1day", "REC_TXx",
-    "RR25mm", "Rx1day", "TN", "TNn", "TX", "TX25", "TX30", "TXx",
-]
-indicators_avail = APPROVED_INDICATORS
+    if "applied" not in st.session_state:
+        if _ON_CLOUD:
+            _seed_ind = "TX"
+        else:
+            _seed_inds = list_indicators("historical", method="sd")
+            _seed_ind  = _seed_inds[0] if _seed_inds else "TX"
+        st.session_state["applied"] = dict(
+            ssp="ssp370", bp_tag="bp1995-2014",
+            indicator=_seed_ind,
+            season=SEASON_ANN, model_choice=_MODEL_ENSEMBLE_MEAN,
+        )
+    if "method" not in st.session_state:
+        st.session_state["method"] = "sd"
 
-if not indicators_avail:
-    st.sidebar.warning("No data found for either downscaling method."); st.stop()
+    _current_method = st.session_state["method"]
 
-with st.sidebar:
-    logo_path = Path("logos/esnz_logo_horz_new.png")
-    if logo_path.exists(): st.image(str(logo_path))
+    APPROVED_INDICATORS = [
+        "DD1mm", "FD", "PR", "REC_Rx1day", "REC_TXx",
+        "RR25mm", "Rx1day", "TN", "TNn", "TX", "TX25", "TX30", "TXx",
+    ]
+    indicators_avail = APPROVED_INDICATORS
 
-    _sc.html(f"""
+    if not indicators_avail:
+        st.sidebar.warning("No data found for either downscaling method."); st.stop()
+
+    with st.sidebar:
+        logo_path = Path("logos/esnz_logo_horz_new.png")
+        if logo_path.exists(): st.image(str(logo_path))
+
+        _sc.html(f"""
 <style>
 body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:transparent; }}
 .lbl {{ font-size:13px; color:#31333f; font-weight:600; display:block; margin:0 0 6px; }}
@@ -1680,122 +1699,130 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
 </script>
 """, height=90)
 
-    st.markdown("---")
-
-    with st.form("map_controls", border=False):
-        st.subheader("Future scenario (SSP)")
-        _sel_ssp = st.selectbox("SSP", SSP_OPTIONS, format_func=lambda s: SSP_LABELS[s],
-            label_visibility="collapsed",
-            index=SSP_OPTIONS.index(st.session_state["applied"]["ssp"]), key="_sel_ssp")
-
-        st.subheader("Baseline period")
-        _sel_bp_tag = st.selectbox("Baseline", BP_OPTIONS, format_func=lambda b: BP_LABELS[b],
-            label_visibility="collapsed",
-            index=BP_OPTIONS.index(st.session_state["applied"]["bp_tag"]), key="_sel_bp_tag")
-
         st.markdown("---")
 
-        st.subheader("Indicator")
-        _ind_default = st.session_state["applied"]["indicator"]
-        _grouped_options = _build_grouped_indicator_options(indicators_avail)
-        _ind_idx = next((i for i, v in enumerate(_grouped_options) if v == _ind_default), 0)
-        _sel_indicator = st.selectbox(
-            "Indicator", _grouped_options,
-            format_func=lambda i: (
-                f"{'━' * 18}" if i.startswith(f"{_SEPARATOR_PREFIX}━")
-                else f"{'╌' * 6}  {i[len(_SEPARATOR_PREFIX)+1:].upper()}  {'╌' * 6}"
-                if i.startswith(_SEPARATOR_PREFIX)
-                else f"{i} — {INDICATOR_LABELS.get(i, '')}"
-            ),
-            label_visibility="collapsed", index=_ind_idx, key="_sel_indicator")
+        with st.form("map_controls", border=False):
+            st.subheader("Future scenario (SSP)")
+            _sel_ssp = st.selectbox("SSP", SSP_OPTIONS, format_func=lambda s: SSP_LABELS[s],
+                label_visibility="collapsed",
+                index=SSP_OPTIONS.index(st.session_state["applied"]["ssp"]), key="_sel_ssp")
 
-        _applied_ind = st.session_state["applied"]["indicator"]
-        if _ON_CLOUD:
-            _seasons_avail = []
-            for _s in SEASON_LABELS:
-                _probe = (load_uncertainty_cache(_applied_ind, _cfg["ssp"], _cfg["bp_tag"], _s, method="sd")
-                          or load_uncertainty_cache(_applied_ind, _cfg["ssp"], _cfg["bp_tag"], _s, method="dd"))
-                if _probe is not None:
-                    _seasons_avail.append(_s)
-            if not _seasons_avail:
-                _seasons_avail = [SEASON_ANN]
-        else:
-            _seas_sd = set(discover_seasons("historical", _applied_ind, method="sd"))
-            _seas_dd = set(discover_seasons("historical", _applied_ind, method="dd"))
-            _seasons_avail = sorted(_seas_sd | _seas_dd,
-                                    key=lambda s: list(SEASON_LABELS).index(s) if s in SEASON_LABELS else 99)SEASON_LABELS else 99)
-        if len(_seasons_avail) > 1:
-            st.subheader("Season")
-            _seas_default = st.session_state["applied"]["season"]
-            _seas_idx = (_seasons_avail.index(_seas_default) if _seas_default in _seasons_avail else 0)
-            _sel_season = st.selectbox("Season", _seasons_avail,
-                format_func=lambda s: SEASON_LABELS.get(s, s),
-                label_visibility="collapsed", index=_seas_idx, key="_sel_season")
-        else:
-            _sel_season = SEASON_ANN
+            st.subheader("Baseline period")
+            _sel_bp_tag = st.selectbox("Baseline", BP_OPTIONS, format_func=lambda b: BP_LABELS[b],
+                label_visibility="collapsed",
+                index=BP_OPTIONS.index(st.session_state["applied"]["bp_tag"]), key="_sel_bp_tag")
 
-        st.subheader("Model")
-        _cfg = st.session_state["applied"]
-        if _ON_CLOUD:
-            _unc_sd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
-                                                   _cfg["bp_tag"], _cfg["season"], method="sd")
-            _unc_dd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
-                                                   _cfg["bp_tag"], _cfg["season"], method="dd")
-            _models_sd = set(_unc_sd_probe["model_change_vals"].keys()) if _unc_sd_probe else set()
-            _models_dd = set(_unc_dd_probe["model_change_vals"].keys()) if _unc_dd_probe else set()
-        else:
-            _models_sd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
-                                             _cfg["season"], method="sd"))
-            _models_dd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
-                                             _cfg["season"], method="dd"))
-        _avail_models = sorted(_models_sd | _models_dd)
-        _shared_models = _models_sd & _models_dd
+            st.markdown("---")
 
-        def _model_label(m):
-            if m == _MODEL_ENSEMBLE_MEAN: return m
-            tags = []
-            if m in _models_sd: tags.append("SD")
-            if m in _models_dd: tags.append("DD")
-            return f"{m} [{'/'.join(tags)}]{'  ★' if m in _shared_models else ''}"
+            st.subheader("Indicator")
+            _ind_default = st.session_state["applied"]["indicator"]
+            _grouped_options = _build_grouped_indicator_options(indicators_avail)
+            _ind_idx = next((i for i, v in enumerate(_grouped_options) if v == _ind_default), 0)
+            _sel_indicator = st.selectbox(
+                "Indicator", _grouped_options,
+                format_func=lambda i: (
+                    f"{'━' * 18}" if i.startswith(f"{_SEPARATOR_PREFIX}━")
+                    else f"{'╌' * 6}  {i[len(_SEPARATOR_PREFIX)+1:].upper()}  {'╌' * 6}"
+                    if i.startswith(_SEPARATOR_PREFIX)
+                    else f"{i} — {INDICATOR_LABELS.get(i, '')}"
+                ),
+                label_visibility="collapsed", index=_ind_idx, key="_sel_indicator")
 
-        _model_options = [_MODEL_ENSEMBLE_MEAN] + _avail_models
-        _mod_default   = _cfg["model_choice"]
-        _mod_idx       = (_model_options.index(_mod_default) if _mod_default in _model_options else 0)
-        _sel_model = st.selectbox("Model", _model_options,
-            format_func=_model_label, label_visibility="collapsed",
-            help=f"★ = available in both methods ({len(_shared_models)} shared)",
-            index=_mod_idx, key="_sel_model")
+            _applied_ind = st.session_state["applied"]["indicator"]
 
-        st.markdown("---")
-        _submitted = st.form_submit_button("▶  Apply", type="primary", use_container_width=True)
+            # ── Season discovery: use uncertainty cache on cloud ──────────────
+            if _ON_CLOUD:
+                _seasons_avail = []
+                for _s in SEASON_LABELS:
+                    _probe = (load_uncertainty_cache(_applied_ind, st.session_state["applied"]["ssp"],
+                                                     st.session_state["applied"]["bp_tag"], _s, method="sd")
+                              or load_uncertainty_cache(_applied_ind, st.session_state["applied"]["ssp"],
+                                                        st.session_state["applied"]["bp_tag"], _s, method="dd"))
+                    if _probe is not None:
+                        _seasons_avail.append(_s)
+                if not _seasons_avail:
+                    _seasons_avail = [SEASON_ANN]
+            else:
+                _seas_sd = set(discover_seasons("historical", _applied_ind, method="sd"))
+                _seas_dd = set(discover_seasons("historical", _applied_ind, method="dd"))
+                _seasons_avail = sorted(_seas_sd | _seas_dd,
+                                        key=lambda s: list(SEASON_LABELS).index(s) if s in SEASON_LABELS else 99)
 
-    if _submitted:
-        if _sel_indicator.startswith(_SEPARATOR_PREFIX):
-            _sel_indicator = st.session_state["applied"]["indicator"]
-        _valid_sd = ["Ensemble mean (all models)"] + list(discover_models(
-            _sel_ssp, _sel_indicator, _sel_bp_tag, _sel_season, method="sd"))
-        _valid_dd = ["Ensemble mean (all models)"] + list(discover_models(
-            _sel_ssp, _sel_indicator, _sel_bp_tag, _sel_season, method="dd"))
-        if _sel_model not in (_valid_sd + _valid_dd):
-            _sel_model = _MODEL_ENSEMBLE_MEAN
-        st.session_state["applied"] = dict(
-            ssp=_sel_ssp, bp_tag=_sel_bp_tag,
-            indicator=_sel_indicator, season=_sel_season, model_choice=_sel_model)
-        st.rerun()
+            if len(_seasons_avail) > 1:
+                st.subheader("Season")
+                _seas_default = st.session_state["applied"]["season"]
+                _seas_idx = (_seasons_avail.index(_seas_default) if _seas_default in _seasons_avail else 0)
+                _sel_season = st.selectbox("Season", _seasons_avail,
+                    format_func=lambda s: SEASON_LABELS.get(s, s),
+                    label_visibility="collapsed", index=_seas_idx, key="_sel_season")
+            else:
+                _sel_season = SEASON_ANN
 
-    _cfg            = st.session_state["applied"]
-    ssp             = _cfg["ssp"]
-    bp_tag          = _cfg["bp_tag"]
-    indicator       = _cfg["indicator"]
-    season          = _cfg["season"]
-    model_choice    = _cfg["model_choice"]
-    method          = _current_method
-    selected_model_key = None if model_choice == _MODEL_ENSEMBLE_MEAN else model_choice
+            st.subheader("Model")
+            _cfg = st.session_state["applied"]
 
-    colorscale     = colorscale_for(indicator)
-    colorscale_abs = colorscale_abs_for(indicator)
+            # ── Model discovery: use uncertainty cache on cloud ───────────────
+            if _ON_CLOUD:
+                _unc_sd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
+                                                       _cfg["bp_tag"], _cfg["season"], method="sd")
+                _unc_dd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
+                                                       _cfg["bp_tag"], _cfg["season"], method="dd")
+                _models_sd = set(_unc_sd_probe["model_change_vals"].keys()) if _unc_sd_probe else set()
+                _models_dd = set(_unc_dd_probe["model_change_vals"].keys()) if _unc_dd_probe else set()
+            else:
+                _models_sd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
+                                                 _cfg["season"], method="sd"))
+                _models_dd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
+                                                 _cfg["season"], method="dd"))
 
-    _sc.html("""
+            _avail_models = sorted(_models_sd | _models_dd)
+            _shared_models = _models_sd & _models_dd
+
+            def _model_label(m):
+                if m == _MODEL_ENSEMBLE_MEAN: return m
+                tags = []
+                if m in _models_sd: tags.append("SD")
+                if m in _models_dd: tags.append("DD")
+                return f"{m} [{'/'.join(tags)}]{'  ★' if m in _shared_models else ''}"
+
+            _model_options = [_MODEL_ENSEMBLE_MEAN] + _avail_models
+            _mod_default   = _cfg["model_choice"]
+            _mod_idx       = (_model_options.index(_mod_default) if _mod_default in _model_options else 0)
+            _sel_model = st.selectbox("Model", _model_options,
+                format_func=_model_label, label_visibility="collapsed",
+                help=f"★ = available in both methods ({len(_shared_models)} shared)",
+                index=_mod_idx, key="_sel_model")
+
+            st.markdown("---")
+            _submitted = st.form_submit_button("▶  Apply", type="primary", use_container_width=True)
+
+        if _submitted:
+            if _sel_indicator.startswith(_SEPARATOR_PREFIX):
+                _sel_indicator = st.session_state["applied"]["indicator"]
+            _valid_sd = [_MODEL_ENSEMBLE_MEAN] + list(discover_models(
+                _sel_ssp, _sel_indicator, _sel_bp_tag, _sel_season, method="sd"))
+            _valid_dd = [_MODEL_ENSEMBLE_MEAN] + list(discover_models(
+                _sel_ssp, _sel_indicator, _sel_bp_tag, _sel_season, method="dd"))
+            if _sel_model not in (_valid_sd + _valid_dd):
+                _sel_model = _MODEL_ENSEMBLE_MEAN
+            st.session_state["applied"] = dict(
+                ssp=_sel_ssp, bp_tag=_sel_bp_tag,
+                indicator=_sel_indicator, season=_sel_season, model_choice=_sel_model)
+            st.rerun()
+
+        _cfg            = st.session_state["applied"]
+        ssp             = _cfg["ssp"]
+        bp_tag          = _cfg["bp_tag"]
+        indicator       = _cfg["indicator"]
+        season          = _cfg["season"]
+        model_choice    = _cfg["model_choice"]
+        method          = _current_method
+        selected_model_key = None if model_choice == _MODEL_ENSEMBLE_MEAN else model_choice
+
+        colorscale     = colorscale_for(indicator)
+        colorscale_abs = colorscale_abs_for(indicator)
+
+        _sc.html("""
 <style>
 body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;}
 .lbl{font-size:13px;color:#31333f;font-weight:600;display:block;margin:10px 0 4px;}
@@ -1827,354 +1854,339 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
 </script>
 """, height=110)
 
-    dot_opacity = 0.7
-    frame_ms    = 400
+        dot_opacity = 0.7
+        frame_ms    = 400
 
-# ============================================================================
-# Main execution
-# ============================================================================
-st.title("🗺️ NZ Climate Indicator Map")
+    # ========================================================================
+    # Main execution
+    # ========================================================================
+    st.title("🗺️ NZ Climate Indicator Map")
 
-if _DEMO_MODE:
-    st.info("🧪 **Demo mode** — running on synthetic test data. See `test/README.md`.")
+    if _DEMO_MODE:
+        st.info("🧪 **Demo mode** — running on synthetic test data. See `test/README.md`.")
 
-season_label = SEASON_LABELS.get(season, season)
-bp_short     = bp_tag.replace("bp","").replace("-","–")
-model_label  = selected_model_key if selected_model_key else "Ensemble mean"
+    season_label = SEASON_LABELS.get(season, season)
+    bp_short     = bp_tag.replace("bp","").replace("-","–")
+    model_label  = selected_model_key if selected_model_key else "Ensemble mean"
 
-# ── 1. Build timelines ────────────────────────────────────────────────────────
-SNAPSHOTS_SD = build_timeline(indicator, bp_tag, ssp, season, method="sd")
-SNAPSHOTS_DD = build_timeline(indicator, bp_tag, ssp, season, method="dd")
-SNAPSHOTS = SNAPSHOTS_SD if SNAPSHOTS_SD else SNAPSHOTS_DD
+    # ── 1. Build timelines ────────────────────────────────────────────────────
+    SNAPSHOTS_SD = build_timeline(indicator, bp_tag, ssp, season, method="sd")
+    SNAPSHOTS_DD = build_timeline(indicator, bp_tag, ssp, season, method="dd")
+    SNAPSHOTS = SNAPSHOTS_SD if SNAPSHOTS_SD else SNAPSHOTS_DD
 
-if not SNAPSHOTS and _ON_CLOUD:
-    # On cloud there are no .nc files — build timeline from uncertainty cache instead
-    _unc_tmp = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd")
-    if _unc_tmp is None:
-        _unc_tmp = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="dd")
-    if _unc_tmp is not None:
-        SNAPSHOTS = []
-        for yr in _unc_tmp["snap_years"]:
-            if yr < 2015:
-                SNAPSHOTS.append((f"Historical {bp_tag.replace('bp','').replace('-','–')}",
-                                  "historical", bp_tag, bp_tag, yr))
-            else:
-                fp = f"fp{int(yr)-9}-{int(yr)+10}"
-                SNAPSHOTS.append((f"{int(yr)-9}–{int(yr)+10}", ssp, fp, bp_tag, yr))
-        SNAPSHOTS = sorted(SNAPSHOTS, key=lambda x: x[4])
+    if not SNAPSHOTS and _ON_CLOUD:
+        _unc_tmp = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd")
+        if _unc_tmp is None:
+            _unc_tmp = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="dd")
+        if _unc_tmp is not None:
+            SNAPSHOTS = []
+            for yr in _unc_tmp["snap_years"]:
+                if yr < 2015:
+                    SNAPSHOTS.append((f"Historical {bp_tag.replace('bp','').replace('-','–')}",
+                                      "historical", bp_tag, bp_tag, yr))
+                else:
+                    fp = f"fp{int(yr)-9}-{int(yr)+10}"
+                    SNAPSHOTS.append((f"{int(yr)-9}–{int(yr)+10}", ssp, fp, bp_tag, yr))
+            SNAPSHOTS = sorted(SNAPSHOTS, key=lambda x: x[4])
 
-if not SNAPSHOTS:
-    st.error(f"No files found for indicator **{indicator}**, baseline **{bp_tag}**, season **{season}**."); st.stop()
+    if not SNAPSHOTS:
+        st.error(f"No files found for indicator **{indicator}**, baseline **{bp_tag}**, season **{season}**."); st.stop()
 
-SNAP_COLOURS = ["#4a90d9","#1a5fa8","#e8a020","#e05a20","#c0392b","#8e1a1a","#5a0f0f","#2d0808"]
+    SNAP_COLOURS = ["#4a90d9","#1a5fa8","#e8a020","#e05a20","#c0392b","#8e1a1a","#5a0f0f","#2d0808"]
 
-pills = "".join(
-    f'<span style="display:inline-block;padding:4px 14px;border-radius:16px;'
-    f'background:{SNAP_COLOURS[min(i,len(SNAP_COLOURS)-1)]};color:white;'
-    f'font-size:0.78rem;font-weight:600;margin-right:6px;margin-bottom:4px">'
-    f'{label}</span>'
-    for i,(label,_,_,_,_) in enumerate(SNAPSHOTS))
-st.markdown(
-    f'<div style="margin-bottom:10px">{pills}'
-    f'<span style="font-size:0.78rem;color:#888">'
-    f'← {len(SNAPSHOTS)} snapshots · toggle SD/DD without losing map position'
-    f'</span></div>', unsafe_allow_html=True)
+    pills = "".join(
+        f'<span style="display:inline-block;padding:4px 14px;border-radius:16px;'
+        f'background:{SNAP_COLOURS[min(i,len(SNAP_COLOURS)-1)]};color:white;'
+        f'font-size:0.78rem;font-weight:600;margin-right:6px;margin-bottom:4px">'
+        f'{label}</span>'
+        for i,(label,_,_,_,_) in enumerate(SNAPSHOTS))
+    st.markdown(
+        f'<div style="margin-bottom:10px">{pills}'
+        f'<span style="font-size:0.78rem;color:#888">'
+        f'← {len(SNAPSHOTS)} snapshots · toggle SD/DD without losing map position'
+        f'</span></div>', unsafe_allow_html=True)
 
-import streamlit.components.v1 as _components
+    import streamlit.components.v1 as _components
 
-_map_slot = st.empty()
-with _map_slot.container():
-    _components.html(build_loading_screen_html(nz_loader_svg_data(), height=630), height=630, scrolling=False)
+    _map_slot = st.empty()
+    with _map_slot.container():
+        _components.html(build_loading_screen_html(nz_loader_svg_data(), height=630), height=630, scrolling=False)
 
-# ── 2. Load uncertainty caches ────────────────────────────────────────────────
-_unc_sd = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd")
-_unc_dd = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="dd")
+    # ── 2. Load uncertainty caches ────────────────────────────────────────────
+    _unc_sd = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd")
+    _unc_dd = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="dd")
 
-if _unc_sd is None and _unc_dd is None:
-    st.error(
-        "Uncertainty cache not found for either downscaling method.\n\n"
-        "Run:\n```\npython helper_scripts/precompute_uncertainty.py --method sd\n"
-        "python helper_scripts/precompute_uncertainty.py --method dd\n```"); st.stop()
+    if _unc_sd is None and _unc_dd is None:
+        st.error(
+            "Uncertainty cache not found for either downscaling method.\n\n"
+            "Run:\n```\npython helper_scripts/precompute_uncertainty.py --method sd\n"
+            "python helper_scripts/precompute_uncertainty.py --method dd\n```"); st.stop()
 
-from scipy.spatial import KDTree as _KDTree
+    from scipy.spatial import KDTree as _KDTree
 
-def _build_method_data_native(unc):
-    """Extract stacked arrays using each method's own native coordinate grid.
-    No reindexing to a shared grid — each method keeps its true resolution."""
-    if unc is None:
+    def _build_method_data_native(unc):
+        if unc is None:
+            return dict(
+                stacked=None, stacked_abs=None,
+                p5=None, p25=None, p75=None, p95=None, ens=None,
+                abs_p5=None, abs_p25=None, abs_p75=None, abs_p95=None, abs_ens=None,
+                ymin=None, ymax=None, aymin=None, aymax=None,
+                fp_ranges=None, lat_v=None, lon_v=None,
+            )
+
+        own_lat_v = unc["lat_v"]
+        own_lon_v = unc["lon_v"]
+        n_pts = len(own_lat_v)
+        _unc_snap_years = unc["snap_years"]
+
+        def _get_row(band, yr):
+            dists = [abs(yr - uy) for uy in _unc_snap_years]
+            best  = int(np.argmin(dists))
+            return band[best] if dists[best] < 2.0 else np.full(n_pts, np.nan)
+
+        def _reindex(band):
+            return np.stack([_get_row(band, yr) for _,_,_,_,yr in SNAPSHOTS], axis=0)
+
+        if selected_model_key and selected_model_key in unc.get("model_change_vals", {}):
+            stacked = np.stack([_get_row(unc["model_change_vals"][selected_model_key], yr)
+                                for _,_,_,_,yr in SNAPSHOTS], axis=0)
+        else:
+            stacked = _reindex(unc["ens_vals"])
+
+        if selected_model_key and selected_model_key in unc.get("model_abs_vals", {}):
+            stacked_abs = np.stack([_get_row(unc["model_abs_vals"][selected_model_key], yr)
+                                    for _,_,_,_,yr in SNAPSHOTS], axis=0)
+        else:
+            stacked_abs = _reindex(unc["abs_ens_vals"])
+
+        ens     = (_reindex(unc["ens_vals"])     if selected_model_key else None)
+        abs_ens = (_reindex(unc["abs_ens_vals"]) if selected_model_key else None)
+
+        def _ab(key):
+            return _reindex(unc[key]) if key in unc else np.full((len(SNAPSHOTS), n_pts), np.nan)
+
+        fp_ranges = []
+        for (_,_,_,_,yr) in SNAPSHOTS:
+            dists = [abs(yr-uy) for uy in _unc_snap_years]
+            best  = int(np.argmin(dists))
+            fp_ranges.append(unc["snap_fp_ranges"][best] if dists[best]<2.0 else str(int(round(yr))))
+
         return dict(
-            stacked=None, stacked_abs=None,
-            p5=None, p25=None, p75=None, p95=None, ens=None,
-            abs_p5=None, abs_p25=None, abs_p75=None, abs_p95=None, abs_ens=None,
-            ymin=None, ymax=None, aymin=None, aymax=None,
-            fp_ranges=None, lat_v=None, lon_v=None,
+            stacked=stacked, stacked_abs=stacked_abs,
+            p5 =_reindex(unc["p5_vals"]),  p25=_reindex(unc["p25_vals"]),
+            p75=_reindex(unc["p75_vals"]), p95=_reindex(unc["p95_vals"]),
+            ens=ens,
+            abs_p5 =_ab("abs_p5_vals"),  abs_p25=_ab("abs_p25_vals"),
+            abs_p75=_ab("abs_p75_vals"), abs_p95=_ab("abs_p95_vals"),
+            abs_ens=abs_ens,
+            ymin=unc.get("chart_ymin"),     ymax=unc.get("chart_ymax"),
+            aymin=unc.get("abs_chart_ymin"),aymax=unc.get("abs_chart_ymax"),
+            fp_ranges=fp_ranges,
+            lat_v=own_lat_v, lon_v=own_lon_v,
         )
 
-    own_lat_v = unc["lat_v"]
-    own_lon_v = unc["lon_v"]
-    n_pts = len(own_lat_v)
-    _unc_snap_years = unc["snap_years"]
+    with st.spinner("Loading model uncertainty ranges for both methods…"):
+        _dat_sd = _build_method_data_native(_unc_sd)
+        _dat_dd = _build_method_data_native(_unc_dd)
 
-    def _get_row(band, yr):
-        dists = [abs(yr - uy) for uy in _unc_snap_years]
-        best  = int(np.argmin(dists))
-        return band[best] if dists[best] < 2.0 else np.full(n_pts, np.nan)
+    _fallback_unc = _unc_sd if _unc_sd is not None else _unc_dd
+    _fallback_lat_v = _fallback_unc["lat_v"]
+    _fallback_lon_v = _fallback_unc["lon_v"]
 
-    def _reindex(band):
-        return np.stack([_get_row(band, yr) for _,_,_,_,yr in SNAPSHOTS], axis=0)
+    _sd_lat_v = _dat_sd["lat_v"] if _dat_sd["lat_v"] is not None else _fallback_lat_v
+    _sd_lon_v = _dat_sd["lon_v"] if _dat_sd["lon_v"] is not None else _fallback_lon_v
+    _dd_lat_v = _dat_dd["lat_v"] if _dat_dd["lat_v"] is not None else _fallback_lat_v
+    _dd_lon_v = _dat_dd["lon_v"] if _dat_dd["lon_v"] is not None else _fallback_lon_v
 
-    if selected_model_key and selected_model_key in unc.get("model_change_vals", {}):
-        stacked = np.stack([_get_row(unc["model_change_vals"][selected_model_key], yr)
-                            for _,_,_,_,yr in SNAPSHOTS], axis=0)
-    else:
-        stacked = _reindex(unc["ens_vals"])
+    # ── 3. Colour ranges ──────────────────────────────────────────────────────
+    with st.spinner("Computing colour ranges…"):
+        shared_half      = compute_color_range(indicator)
+        abs_vmin, abs_vmax = compute_abs_color_range(indicator)
 
-    if selected_model_key and selected_model_key in unc.get("model_abs_vals", {}):
-        stacked_abs = np.stack([_get_row(unc["model_abs_vals"][selected_model_key], yr)
-                                for _,_,_,_,yr in SNAPSHOTS], axis=0)
-    else:
-        stacked_abs = _reindex(unc["abs_ens_vals"])
+    _chg_vmin = 0.0 if indicator in _REC_INDICATORS else -shared_half
+    _chg_vmax = 100.0 if indicator in _REC_INDICATORS else shared_half
 
-    ens     = (_reindex(unc["ens_vals"])     if selected_model_key else None)
-    abs_ens = (_reindex(unc["abs_ens_vals"]) if selected_model_key else None)
+    # ── 4. Render frames ──────────────────────────────────────────────────────
+    def _compute_hover_thresh(lat_v, lon_v):
+        from scipy.spatial import KDTree
+        def merc(l): return np.log(np.tan(np.pi/4 + np.deg2rad(l)/2))
+        pts = np.column_stack([np.deg2rad(lon_v), merc(lat_v)])
+        kd  = KDTree(pts)
+        n   = min(2000, len(pts))
+        idx = np.random.default_rng(0).choice(len(pts), n, replace=False)
+        d, _ = kd.query(pts[idx], k=2)
+        gs  = float(np.median(d[:, 1]))
+        return float(np.rad2deg(gs * 0.55))
 
-    def _ab(key):
-        return _reindex(unc[key]) if key in unc else np.full((len(SNAPSHOTS), n_pts), np.nan)
+    def _render_method(dat, mth, lat_v, lon_v):
+        lm_chg = _log_mode(indicator, is_change=True)
+        lm_abs = _log_mode(indicator, is_change=False)
+        key_c  = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
+                                  colorscale, _chg_vmin, _chg_vmax, lm_chg)
+        cached = _load_frame_cache(key_c, method=mth)
+        if cached:
+            b64_c, lat_min, lat_max, lon_min, lon_max, thresh = cached
+        else:
+            stacked = dat["stacked"] if dat["stacked"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
+            with st.spinner(f"Rendering {len(SNAPSHOTS)} change frames ({mth.upper()})…"):
+                b64_c, lat_min, lat_max, lon_min, lon_max, thresh = prerender_snapshots(
+                    lat_v, lon_v, stacked, _chg_vmin, _chg_vmax,
+                    colorscale, indicator, is_change=(indicator not in _REC_INDICATORS))
+            _save_frame_cache(key_c, (b64_c,lat_min,lat_max,lon_min,lon_max,thresh), method=mth)
 
-    fp_ranges = []
-    for (_,_,_,_,yr) in SNAPSHOTS:
-        dists = [abs(yr-uy) for uy in _unc_snap_years]
-        best  = int(np.argmin(dists))
-        fp_ranges.append(unc["snap_fp_ranges"][best] if dists[best]<2.0 else str(int(round(yr))))
+        key_a    = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
+                                    colorscale_abs, abs_vmin, abs_vmax, lm_abs)
+        cached_a = _load_frame_cache(key_a, method=mth)
+        if cached_a:
+            b64_a = cached_a[0]
+        else:
+            stacked_abs = dat["stacked_abs"] if dat["stacked_abs"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
+            with st.spinner(f"Rendering {len(SNAPSHOTS)} absolute frames ({mth.upper()})…"):
+                res_a = prerender_snapshots(lat_v, lon_v, stacked_abs,
+                                            abs_vmin, abs_vmax, colorscale_abs,
+                                            indicator, is_change=False)
+            b64_a = res_a[0]
+            _save_frame_cache(key_a, res_a, method=mth)
 
-    return dict(
-        stacked=stacked, stacked_abs=stacked_abs,
-        p5 =_reindex(unc["p5_vals"]),  p25=_reindex(unc["p25_vals"]),
-        p75=_reindex(unc["p75_vals"]), p95=_reindex(unc["p95_vals"]),
-        ens=ens,
-        abs_p5 =_ab("abs_p5_vals"),  abs_p25=_ab("abs_p25_vals"),
-        abs_p75=_ab("abs_p75_vals"), abs_p95=_ab("abs_p95_vals"),
-        abs_ens=abs_ens,
-        ymin=unc.get("chart_ymin"),     ymax=unc.get("chart_ymax"),
-        aymin=unc.get("abs_chart_ymin"),aymax=unc.get("abs_chart_ymax"),
-        fp_ranges=fp_ranges,
-        lat_v=own_lat_v, lon_v=own_lon_v,
+        return b64_c, b64_a, lat_min, lat_max, lon_min, lon_max, thresh
+
+    _b64c_sd, _b64a_sd, lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd, thresh_sd = _render_method(_dat_sd, "sd", _sd_lat_v, _sd_lon_v)
+    _b64c_dd, _b64a_dd, lat_min_dd, lat_max_dd, lon_min_dd, lon_max_dd, thresh_dd = _render_method(_dat_dd, "dd", _dd_lat_v, _dd_lon_v)
+
+    lat_min, lat_max, lon_min, lon_max = lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd
+    thresh    = _compute_hover_thresh(_sd_lat_v, _sd_lon_v)
+    thresh_dd = _compute_hover_thresh(_dd_lat_v, _dd_lon_v)
+
+    # ── 5. Colour bars ────────────────────────────────────────────────────────
+    units_note     = "%" if indicator in _REC_INDICATORS else f"Δ {INDICATOR_UNITS.get(indicator,'')}"
+    abs_units_note = _REC_ABS_UNITS.get(indicator,"") if indicator in _REC_INDICATORS else INDICATOR_UNITS.get(indicator,"")
+
+    with st.spinner("Rendering colour bars…"):
+        cb_chg = render_colorbar_b64(_chg_vmin, _chg_vmax, colorscale, units_note,
+                                      indicator=indicator, is_change=(indicator not in _REC_INDICATORS))
+        cb_abs = render_colorbar_b64(abs_vmin, abs_vmax, colorscale_abs, abs_units_note,
+                                      indicator=indicator, is_change=False)
+
+    # ── 6. Virtual frame timeline ─────────────────────────────────────────────
+    snap_years     = [yr    for _,_,_,_,yr    in SNAPSHOTS]
+    snap_labels    = [label for label,_,_,_,_ in SNAPSHOTS]
+    frame_years_all, snap_frame_idx = compute_frame_timeline(snap_years, YEAR_STEP)
+
+    # ── 7. Hover value stacks ─────────────────────────────────────────────────
+    def _safe_tolist(arr):
+        if arr is None: return None
+        return [row.tolist() for row in arr]
+
+    _sd_hover     = _safe_tolist(_dat_sd["stacked"])
+    _sd_hover_abs = _safe_tolist(_dat_sd["stacked_abs"])
+    _dd_hover     = _safe_tolist(_dat_dd["stacked"])
+    _dd_hover_abs = _safe_tolist(_dat_dd["stacked_abs"])
+
+    def _tolist_or_none(arr):
+        if arr is None: return None
+        return [row.tolist() for row in arr]
+
+    # ── 8. Build player ───────────────────────────────────────────────────────
+    _borders = load_borders_geojson()
+
+    header_html = (
+        f"<b>{indicator}</b> — {INDICATOR_LABELS.get(indicator,'')} &nbsp;|&nbsp; "
+        f"<b>Season:</b> {season_label} &nbsp;|&nbsp; "
+        f"<b>Baseline:</b> {bp_short} &nbsp;|&nbsp; "
+        f"<b>Future:</b> {SSP_LABELS[ssp]} &nbsp;|&nbsp; "
+        f"<b>Model:</b> {model_label} &nbsp;|&nbsp; "
+        f"<span style='color:#8a4000'>Left = absolute</span> &nbsp;·&nbsp; "
+        f"<span style='color:#1a4a9a'>Right = Δ change</span>"
     )
 
-with st.spinner("Loading model uncertainty ranges for both methods…"):
-    _dat_sd = _build_method_data_native(_unc_sd)
-    _dat_dd = _build_method_data_native(_unc_dd)
+    player_html = build_html_player(
+        sd_snap_b64=_b64c_sd, sd_snap_b64_abs=_b64a_sd,
+        sd_colorbar_b64=cb_chg, sd_colorbar_b64_abs=cb_abs,
+        sd_hover_vals=_sd_hover, sd_hover_abs_vals=_sd_hover_abs,
+        sd_chart_p5 =_tolist_or_none(_dat_sd["p5"]),
+        sd_chart_p25=_tolist_or_none(_dat_sd["p25"]),
+        sd_chart_p75=_tolist_or_none(_dat_sd["p75"]),
+        sd_chart_p95=_tolist_or_none(_dat_sd["p95"]),
+        sd_chart_ens=_tolist_or_none(_dat_sd["ens"]),
+        sd_abs_chart_p5 =_tolist_or_none(_dat_sd["abs_p5"]),
+        sd_abs_chart_p25=_tolist_or_none(_dat_sd["abs_p25"]),
+        sd_abs_chart_p75=_tolist_or_none(_dat_sd["abs_p75"]),
+        sd_abs_chart_p95=_tolist_or_none(_dat_sd["abs_p95"]),
+        sd_abs_chart_ens=_tolist_or_none(_dat_sd["abs_ens"]),
+        sd_chart_ymin=_dat_sd["ymin"], sd_chart_ymax=_dat_sd["ymax"],
+        sd_abs_chart_ymin=_dat_sd["aymin"], sd_abs_chart_ymax=_dat_sd["aymax"],
+        sd_snap_fp_ranges=_dat_sd["fp_ranges"],
+        dd_snap_b64=_b64c_dd, dd_snap_b64_abs=_b64a_dd,
+        dd_colorbar_b64=cb_chg, dd_colorbar_b64_abs=cb_abs,
+        dd_hover_vals=_dd_hover, dd_hover_abs_vals=_dd_hover_abs,
+        dd_chart_p5 =_tolist_or_none(_dat_dd["p5"]),
+        dd_chart_p25=_tolist_or_none(_dat_dd["p25"]),
+        dd_chart_p75=_tolist_or_none(_dat_dd["p75"]),
+        dd_chart_p95=_tolist_or_none(_dat_dd["p95"]),
+        dd_chart_ens=_tolist_or_none(_dat_dd["ens"]),
+        dd_abs_chart_p5 =_tolist_or_none(_dat_dd["abs_p5"]),
+        dd_abs_chart_p25=_tolist_or_none(_dat_dd["abs_p25"]),
+        dd_abs_chart_p75=_tolist_or_none(_dat_dd["abs_p75"]),
+        dd_abs_chart_p95=_tolist_or_none(_dat_dd["abs_p95"]),
+        dd_abs_chart_ens=_tolist_or_none(_dat_dd["abs_ens"]),
+        dd_chart_ymin=_dat_dd["ymin"], dd_chart_ymax=_dat_dd["ymax"],
+        dd_abs_chart_ymin=_dat_dd["aymin"], dd_abs_chart_ymax=_dat_dd["aymax"],
+        dd_snap_fp_ranges=_dat_dd["fp_ranges"],
+        sd_hover_lats=_sd_lat_v.tolist(), sd_hover_lons=_sd_lon_v.tolist(),
+        dd_hover_lats=_dd_lat_v.tolist(), dd_hover_lons=_dd_lon_v.tolist(),
+        snap_years=snap_years, frame_years=frame_years_all,
+        snap_frame_idx=snap_frame_idx, snap_labels=snap_labels,
+        hover_units=units_note, abs_units=abs_units_note,
+        lat_min=lat_min, lat_max=lat_max, lon_min=lon_min, lon_max=lon_max,
+        mask_threshold_deg=thresh,
+        dd_lat_min=lat_min_dd, dd_lat_max=lat_max_dd,
+        dd_lon_min=lon_min_dd, dd_lon_max=lon_max_dd,
+        dd_mask_threshold_deg=thresh_dd,
+        frame_ms=frame_ms, dot_opacity=dot_opacity, header_html=header_html,
+        initial_method=method,
+        country_geojson=_borders["country"], regions_geojson=_borders["regions"],
+    )
 
-# Fallback lat/lon (used only when a method's cache is entirely missing)
-_fallback_unc = _unc_sd if _unc_sd is not None else _unc_dd
-_fallback_lat_v = _fallback_unc["lat_v"]
-_fallback_lon_v = _fallback_unc["lon_v"]
+    with _map_slot.container():
+        _components.html(player_html, height=630, scrolling=False)
 
-# Per-method native lat/lon for rendering and hover
-_sd_lat_v = _dat_sd["lat_v"] if _dat_sd["lat_v"] is not None else _fallback_lat_v
-_sd_lon_v = _dat_sd["lon_v"] if _dat_sd["lon_v"] is not None else _fallback_lon_v
-_dd_lat_v = _dat_dd["lat_v"] if _dat_dd["lat_v"] is not None else _fallback_lat_v
-_dd_lon_v = _dat_dd["lon_v"] if _dat_dd["lon_v"] is not None else _fallback_lon_v
-
-
-# ── 3. Colour ranges ──────────────────────────────────────────────────────────
-with st.spinner("Computing colour ranges…"):
-    shared_half      = compute_color_range(indicator)
-    abs_vmin, abs_vmax = compute_abs_color_range(indicator)
-
-_chg_vmin = 0.0 if indicator in _REC_INDICATORS else -shared_half
-_chg_vmax = 100.0 if indicator in _REC_INDICATORS else shared_half
-
-# ── 4. Render frames — each method uses its own native grid ───────────────────
-def _compute_hover_thresh(lat_v, lon_v):
-    """Compute a tight hover threshold — 0.55x grid spacing so only
-    clicks within half a grid cell of a land point register."""
-    from scipy.spatial import KDTree
-    def merc(l): return np.log(np.tan(np.pi/4 + np.deg2rad(l)/2))
-    pts = np.column_stack([np.deg2rad(lon_v), merc(lat_v)])
-    kd  = KDTree(pts)
-    n   = min(2000, len(pts))
-    idx = np.random.default_rng(0).choice(len(pts), n, replace=False)
-    d, _ = kd.query(pts[idx], k=2)
-    gs  = float(np.median(d[:, 1]))
-    return float(np.rad2deg(gs * 0.55))
-
-def _render_method(dat, mth, lat_v, lon_v):
-    lm_chg = _log_mode(indicator, is_change=True)
-    lm_abs = _log_mode(indicator, is_change=False)
-    key_c  = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
-                              colorscale, _chg_vmin, _chg_vmax, lm_chg)
-    cached = _load_frame_cache(key_c, method=mth)
-    if cached:
-        b64_c, lat_min, lat_max, lon_min, lon_max, thresh = cached
-    else:
-        stacked = dat["stacked"] if dat["stacked"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
-        with st.spinner(f"Rendering {len(SNAPSHOTS)} change frames ({mth.upper()})…"):
-            b64_c, lat_min, lat_max, lon_min, lon_max, thresh = prerender_snapshots(
-                lat_v, lon_v, stacked, _chg_vmin, _chg_vmax,
-                colorscale, indicator, is_change=(indicator not in _REC_INDICATORS))
-        _save_frame_cache(key_c, (b64_c,lat_min,lat_max,lon_min,lon_max,thresh), method=mth)
-
-    key_a  = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
-                              colorscale_abs, abs_vmin, abs_vmax, lm_abs)
-    cached_a = _load_frame_cache(key_a, method=mth)
-    if cached_a:
-        b64_a = cached_a[0]
-    else:
-        stacked_abs = dat["stacked_abs"] if dat["stacked_abs"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
-        with st.spinner(f"Rendering {len(SNAPSHOTS)} absolute frames ({mth.upper()})…"):
-            res_a = prerender_snapshots(lat_v, lon_v, stacked_abs,
-                                        abs_vmin, abs_vmax, colorscale_abs,
-                                        indicator, is_change=False)
-        b64_a = res_a[0]
-        _save_frame_cache(key_a, res_a, method=mth)
-
-    return b64_c, b64_a, lat_min, lat_max, lon_min, lon_max, thresh
-
-_b64c_sd, _b64a_sd, lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd, thresh_sd = _render_method(_dat_sd, "sd", _sd_lat_v, _sd_lon_v)
-_b64c_dd, _b64a_dd, lat_min_dd, lat_max_dd, lon_min_dd, lon_max_dd, thresh_dd = _render_method(_dat_dd, "dd", _dd_lat_v, _dd_lon_v)
-
-lat_min, lat_max, lon_min, lon_max = lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd
-# Override thresh with tightly computed hover thresholds.
-# Cache stores 1.1x grid spacing which is too loose — half a cell (0.55x)
-# ensures hover and click only register on actual land grid points.
-thresh    = _compute_hover_thresh(_sd_lat_v, _sd_lon_v)
-thresh_dd = _compute_hover_thresh(_dd_lat_v, _dd_lon_v)
-
-# ── 5. Colour bars ────────────────────────────────────────────────────────────
-units_note     = "%" if indicator in _REC_INDICATORS else f"Δ {INDICATOR_UNITS.get(indicator,'')}"
-abs_units_note = _REC_ABS_UNITS.get(indicator,"") if indicator in _REC_INDICATORS else INDICATOR_UNITS.get(indicator,"")
-
-with st.spinner("Rendering colour bars…"):
-    cb_chg = render_colorbar_b64(_chg_vmin, _chg_vmax, colorscale, units_note,
-                                  indicator=indicator, is_change=(indicator not in _REC_INDICATORS))
-    cb_abs = render_colorbar_b64(abs_vmin, abs_vmax, colorscale_abs, abs_units_note,
-                                  indicator=indicator, is_change=False)
-
-# ── 6. Virtual frame timeline ─────────────────────────────────────────────────
-snap_years     = [yr    for _,_,_,_,yr    in SNAPSHOTS]
-snap_labels    = [label for label,_,_,_,_ in SNAPSHOTS]
-frame_years_all, snap_frame_idx = compute_frame_timeline(snap_years, YEAR_STEP)
-
-# ── 7. Hover value stacks (native per-method grids) ───────────────────────────
-def _safe_tolist(arr):
-    if arr is None: return None
-    return [row.tolist() for row in arr]
-
-_sd_hover     = _safe_tolist(_dat_sd["stacked"])
-_sd_hover_abs = _safe_tolist(_dat_sd["stacked_abs"])
-_dd_hover     = _safe_tolist(_dat_dd["stacked"])
-_dd_hover_abs = _safe_tolist(_dat_dd["stacked_abs"])
-
-def _tolist_or_none(arr):
-    if arr is None: return None
-    return [row.tolist() for row in arr]
-
-# ── 8. Build player ───────────────────────────────────────────────────────────
-_borders = load_borders_geojson()
-
-header_html = (
-    f"<b>{indicator}</b> — {INDICATOR_LABELS.get(indicator,'')} &nbsp;|&nbsp; "
-    f"<b>Season:</b> {season_label} &nbsp;|&nbsp; "
-    f"<b>Baseline:</b> {bp_short} &nbsp;|&nbsp; "
-    f"<b>Future:</b> {SSP_LABELS[ssp]} &nbsp;|&nbsp; "
-    f"<b>Model:</b> {model_label} &nbsp;|&nbsp; "
-    f"<span style='color:#8a4000'>Left = absolute</span> &nbsp;·&nbsp; "
-    f"<span style='color:#1a4a9a'>Right = Δ change</span>"
-)
-
-player_html = build_html_player(
-    # SD
-    sd_snap_b64=_b64c_sd, sd_snap_b64_abs=_b64a_sd,
-    sd_colorbar_b64=cb_chg, sd_colorbar_b64_abs=cb_abs,
-    sd_hover_vals=_sd_hover, sd_hover_abs_vals=_sd_hover_abs,
-    sd_chart_p5 =_tolist_or_none(_dat_sd["p5"]),
-    sd_chart_p25=_tolist_or_none(_dat_sd["p25"]),
-    sd_chart_p75=_tolist_or_none(_dat_sd["p75"]),
-    sd_chart_p95=_tolist_or_none(_dat_sd["p95"]),
-    sd_chart_ens=_tolist_or_none(_dat_sd["ens"]),
-    sd_abs_chart_p5 =_tolist_or_none(_dat_sd["abs_p5"]),
-    sd_abs_chart_p25=_tolist_or_none(_dat_sd["abs_p25"]),
-    sd_abs_chart_p75=_tolist_or_none(_dat_sd["abs_p75"]),
-    sd_abs_chart_p95=_tolist_or_none(_dat_sd["abs_p95"]),
-    sd_abs_chart_ens=_tolist_or_none(_dat_sd["abs_ens"]),
-    sd_chart_ymin=_dat_sd["ymin"], sd_chart_ymax=_dat_sd["ymax"],
-    sd_abs_chart_ymin=_dat_sd["aymin"], sd_abs_chart_ymax=_dat_sd["aymax"],
-    sd_snap_fp_ranges=_dat_sd["fp_ranges"],
-    # DD
-    dd_snap_b64=_b64c_dd, dd_snap_b64_abs=_b64a_dd,
-    dd_colorbar_b64=cb_chg, dd_colorbar_b64_abs=cb_abs,
-    dd_hover_vals=_dd_hover, dd_hover_abs_vals=_dd_hover_abs,
-    dd_chart_p5 =_tolist_or_none(_dat_dd["p5"]),
-    dd_chart_p25=_tolist_or_none(_dat_dd["p25"]),
-    dd_chart_p75=_tolist_or_none(_dat_dd["p75"]),
-    dd_chart_p95=_tolist_or_none(_dat_dd["p95"]),
-    dd_chart_ens=_tolist_or_none(_dat_dd["ens"]),
-    dd_abs_chart_p5 =_tolist_or_none(_dat_dd["abs_p5"]),
-    dd_abs_chart_p25=_tolist_or_none(_dat_dd["abs_p25"]),
-    dd_abs_chart_p75=_tolist_or_none(_dat_dd["abs_p75"]),
-    dd_abs_chart_p95=_tolist_or_none(_dat_dd["abs_p95"]),
-    dd_abs_chart_ens=_tolist_or_none(_dat_dd["abs_ens"]),
-    dd_chart_ymin=_dat_dd["ymin"], dd_chart_ymax=_dat_dd["ymax"],
-    dd_abs_chart_ymin=_dat_dd["aymin"], dd_abs_chart_ymax=_dat_dd["aymax"],
-    dd_snap_fp_ranges=_dat_dd["fp_ranges"],
-    # Per-method native hover grids
-    sd_hover_lats=_sd_lat_v.tolist(), sd_hover_lons=_sd_lon_v.tolist(),
-    dd_hover_lats=_dd_lat_v.tolist(), dd_hover_lons=_dd_lon_v.tolist(),
-    # Shared
-    snap_years=snap_years, frame_years=frame_years_all,
-    snap_frame_idx=snap_frame_idx, snap_labels=snap_labels,
-    hover_units=units_note, abs_units=abs_units_note,
-    lat_min=lat_min, lat_max=lat_max, lon_min=lon_min, lon_max=lon_max,
-    mask_threshold_deg=thresh,
-    dd_lat_min=lat_min_dd, dd_lat_max=lat_max_dd,
-    dd_lon_min=lon_min_dd, dd_lon_max=lon_max_dd,
-    dd_mask_threshold_deg=thresh_dd,
-    frame_ms=frame_ms, dot_opacity=dot_opacity, header_html=header_html,
-    initial_method=method,
-    country_geojson=_borders["country"], regions_geojson=_borders["regions"],
-)
-
-with _map_slot.container():
-    _components.html(player_html, height=630, scrolling=False)
-
-# ── 9. Summary statistics ─────────────────────────────────────────────────────
-st.markdown("""
+    # ── 9. Summary statistics ─────────────────────────────────────────────────
+    st.markdown("""
 <style>
 [data-testid="stMetricValue"] { font-size:1.05rem !important; font-weight:600; }
 [data-testid="stMetricLabel"] { font-size:0.75rem !important; }
 </style>""", unsafe_allow_html=True)
 
-st.markdown("#### Statistics per snapshot")
-cols = st.columns(len(SNAPSHOTS))
-_unc_for_stats = _unc_sd if _unc_sd is not None else _unc_dd
-_unc_snap_years_pre = _unc_for_stats["snap_years"]
+    st.markdown("#### Statistics per snapshot")
+    cols = st.columns(len(SNAPSHOTS))
+    _unc_for_stats = _unc_sd if _unc_sd is not None else _unc_dd
+    _unc_snap_years_pre = _unc_for_stats["snap_years"]
 
-for i, (label, scen, fp, bp, yr) in enumerate(SNAPSHOTS):
-    is_hist  = scen == "historical"
-    _best_si = int(np.argmin([abs(yr-sy) for sy in _unc_snap_years_pre]))
-    s        = _unc_for_stats["summary_stats"][_best_si]
-    clr      = SNAP_COLOURS[min(i, len(SNAP_COLOURS)-1)]
-    units_ch = ("%" if indicator in _REC_INDICATORS else f"Δ {INDICATOR_UNITS.get(indicator,'')}")
-    units_ab = (_REC_ABS_UNITS.get(indicator,"") if indicator in _REC_INDICATORS
-                else INDICATOR_UNITS.get(indicator,""))
-    with cols[i]:
-        st.markdown(
-            f'<div style="border-left:4px solid {clr};padding-left:8px">'
-            f'<strong style="font-size:0.82rem">{label}</strong><br>'
-            f'<span style="font-size:0.72rem;color:#888">'
-            + ("baseline record chance" if is_hist and indicator in _REC_INDICATORS
-               else "baseline (absolute)" if is_hist
-               else "record chance %" if indicator in _REC_INDICATORS
-               else "change from baseline")
-            + f' · {s["n_models"]} models</span></div>', unsafe_allow_html=True)
-        if is_hist:
-            if s["mean_abs"] is not None:
-                st.metric("Mean (abs)",  f'{s["mean_abs"]:.2f} {units_ab}')
-                st.metric("Range (abs)", f'{s["min_abs"]:.2f} – {s["max_abs"]:.2f} {units_ab}')
-        else:
-            if s["mean_change"] is not None:
-                st.metric("Mean Δ",  f'{s["mean_change"]:+.2f} {units_ch}')
-                st.metric("Range Δ", f'{s["min_change"]:+.2f} – {s["max_change"]:+.2f}')
-            if s["mean_abs"] is not None:
-                st.metric("Mean (abs)", f'{s["mean_abs"]:.2f} {units_ab}')
+    for i, (label, scen, fp, bp, yr) in enumerate(SNAPSHOTS):
+        is_hist  = scen == "historical"
+        _best_si = int(np.argmin([abs(yr-sy) for sy in _unc_snap_years_pre]))
+        s        = _unc_for_stats["summary_stats"][_best_si]
+        clr      = SNAP_COLOURS[min(i, len(SNAP_COLOURS)-1)]
+        units_ch = ("%" if indicator in _REC_INDICATORS else f"Δ {INDICATOR_UNITS.get(indicator,'')}")
+        units_ab = (_REC_ABS_UNITS.get(indicator,"") if indicator in _REC_INDICATORS
+                    else INDICATOR_UNITS.get(indicator,""))
+        with cols[i]:
+            st.markdown(
+                f'<div style="border-left:4px solid {clr};padding-left:8px">'
+                f'<strong style="font-size:0.82rem">{label}</strong><br>'
+                f'<span style="font-size:0.72rem;color:#888">'
+                + ("baseline record chance" if is_hist and indicator in _REC_INDICATORS
+                   else "baseline (absolute)" if is_hist
+                   else "record chance %" if indicator in _REC_INDICATORS
+                   else "change from baseline")
+                + f' · {s["n_models"]} models</span></div>', unsafe_allow_html=True)
+            if is_hist:
+                if s["mean_abs"] is not None:
+                    st.metric("Mean (abs)",  f'{s["mean_abs"]:.2f} {units_ab}')
+                    st.metric("Range (abs)", f'{s["min_abs"]:.2f} – {s["max_abs"]:.2f} {units_ab}')
+            else:
+                if s["mean_change"] is not None:
+                    st.metric("Mean Δ",  f'{s["mean_change"]:+.2f} {units_ch}')
+                    st.metric("Range Δ", f'{s["min_change"]:+.2f} – {s["max_change"]:+.2f}')
+                if s["mean_abs"] is not None:
+                    st.metric("Mean (abs)", f'{s["mean_abs"]:.2f} {units_ab}')

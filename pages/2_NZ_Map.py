@@ -11,32 +11,60 @@ import numpy as np
 import streamlit as st
 
 st.set_page_config(page_title="NZ Climate Indicator Map", layout="wide")
+
+# ── Sidebar collapse-button fix + base styles ────────────────────────────────
 st.markdown("""
 <style>
 html, body, [class*="css"]  { font-size: 14px !important; }
 h1, h2, h3, h4 { font-size: 1.2rem !important; line-height: 1.2 !important; }
+
+/* Make Streamlit's header transparent but DO NOT collapse it —
+   collapsing it (display:none / height:0) destroys the sidebar
+   expand button along with it. */
 header[data-testid="stHeader"] {
-    visibility: hidden;
-    height: 0px !important;
-    min-height: 0px !important;
-    overflow: hidden !important;
+    background: transparent !important;
+}
+
+/* Pin the collapsed-control button across Streamlit versions. */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    position: fixed !important;
+    top: 0.5rem !important;
+    left: 0.5rem !important;
+    z-index: 999999 !important;
+    pointer-events: auto !important;
 }
 </style>
 <script>
+/* Heartbeat that re-applies styles every 500 ms. Streamlit re-renders parts
+   of the app frequently and may briefly detach the button — this keeps it
+   permanently visible and clickable. */
 (function() {
     function fixBtn() {
-        var btn = document.querySelector('[data-testid="collapsedControl"]');
-        if (!btn) return;
-        btn.style.setProperty('visibility', 'visible', 'important');
-        btn.style.setProperty('display',    'flex',    'important');
-        btn.style.setProperty('position',   'fixed',   'important');
-        btn.style.setProperty('top',        '0.5rem',  'important');
-        btn.style.setProperty('left',       '0.5rem',  'important');
-        btn.style.setProperty('z-index',    '999999',  'important');
+        var sels = ['[data-testid="collapsedControl"]',
+                    '[data-testid="stSidebarCollapsedControl"]'];
+        for (var i = 0; i < sels.length; i++) {
+            var btn = window.parent.document.querySelector(sels[i])
+                   || document.querySelector(sels[i]);
+            if (!btn) continue;
+            btn.style.setProperty('display',    'flex',    'important');
+            btn.style.setProperty('visibility', 'visible', 'important');
+            btn.style.setProperty('opacity',    '1',       'important');
+            btn.style.setProperty('position',   'fixed',   'important');
+            btn.style.setProperty('top',        '0.5rem',  'important');
+            btn.style.setProperty('left',       '0.5rem',  'important');
+            btn.style.setProperty('z-index',    '999999',  'important');
+            btn.style.setProperty('pointer-events', 'auto', 'important');
+        }
     }
     fixBtn();
-    var obs = new MutationObserver(fixBtn);
-    obs.observe(document.body, { childList: true, subtree: true });
+    setInterval(fixBtn, 500);
+    try {
+        new MutationObserver(fixBtn).observe(document.body, { childList: true, subtree: true });
+    } catch (e) {}
 })();
 </script>
 """, unsafe_allow_html=True)
@@ -788,7 +816,72 @@ def build_html_player(
 <style>
 * {{ box-sizing:border-box; margin:0; padding:0; }}
 body {{ font-family:Arial,sans-serif; background:white; overflow-x:hidden; }}
-#header {{ padding:5px 12px 2px; font-size:11px; color:#444; border-bottom:1px solid #eee; }}
+#header {{ padding:5px 12px 2px; font-size:11px; color:#444; border-bottom:1px solid #eee; position:relative; padding-right:130px; }}
+#help-btn {{
+  position:absolute; top:4px; right:12px;
+  background:#1a4f7a; color:white; border:none;
+  padding:5px 12px; font-size:11px; font-weight:600;
+  border-radius:4px; cursor:pointer; z-index:1000;
+}}
+#help-btn:hover {{ background:#0a2540; }}
+#help-overlay {{
+  display:none; position:fixed; inset:0;
+  background:rgba(10,37,64,0.55); z-index:99999;
+  justify-content:center; align-items:center;
+}}
+#help-overlay.show {{ display:flex; }}
+.help-modal {{
+  background:white; border-radius:12px;
+  width:92%; max-width:880px; max-height:88vh;
+  display:flex; flex-direction:column;
+  box-shadow:0 10px 40px rgba(0,0,0,0.3); overflow:hidden;
+}}
+.help-modal-header {{
+  padding:14px 20px;
+  background:linear-gradient(135deg,#0a2540,#1a4f7a);
+  color:white; display:flex;
+  justify-content:space-between; align-items:center;
+}}
+.help-modal-header h2 {{ margin:0; font-size:15px; font-weight:600; }}
+.help-close-btn {{
+  background:rgba(255,255,255,0.15); color:white; border:none;
+  width:28px; height:28px; border-radius:50%;
+  cursor:pointer; font-size:13px;
+}}
+.help-close-btn:hover {{ background:rgba(255,255,255,0.3); }}
+.help-tabs {{
+  display:flex; flex-wrap:wrap; gap:2px;
+  padding:0 12px; background:#f8fafc;
+  border-bottom:1px solid #e0e6ed;
+}}
+.help-tab {{
+  background:none; border:none;
+  padding:10px 12px; font-size:11px; font-weight:600;
+  cursor:pointer; color:#5a6b7d;
+  border-bottom:2px solid transparent;
+}}
+.help-tab.active {{ color:#1a4f7a; border-bottom-color:#1a4f7a; }}
+.help-tab:hover {{ color:#1a4f7a; }}
+.help-body {{
+  padding:16px 22px 20px; overflow-y:auto; flex:1;
+  font-size:12.5px; line-height:1.6; color:#2c3e50;
+}}
+.help-body h3 {{ font-size:13px; margin:14px 0 6px; color:#0a2540; }}
+.help-body h3:first-child {{ margin-top:0; }}
+.help-body p {{ margin:0 0 8px; }}
+.help-body ul {{ padding-left:18px; margin:0 0 10px; }}
+.help-body li {{ margin-bottom:3px; }}
+.help-body strong {{ color:#0a2540; }}
+.help-body table {{ width:100%; border-collapse:collapse; margin:6px 0; font-size:11.5px; }}
+.help-body th, .help-body td {{ padding:6px 8px; border-bottom:1px solid #e0e6ed; text-align:left; vertical-align:top; }}
+.help-body th {{ background:#f8fafc; color:#0a2540; font-weight:600; }}
+.help-tab-content {{ display:none; }}
+.help-tab-content.active {{ display:block; }}
+.help-callout {{
+  background:#fff8e6; border-left:3px solid #e8a020;
+  padding:8px 12px; border-radius:4px;
+  margin:8px 0; font-size:12px;
+}}
 #maps-row {{ display:flex; gap:5px; width:100%; padding:0 4px; }}
 .map-panel {{ flex:1; min-width:0; display:flex; flex-direction:column; }}
 .panel-title {{ text-align:center; font-size:14px; font-weight:700; letter-spacing:0.04em;
@@ -847,7 +940,125 @@ body {{ font-family:Arial,sans-serif; background:white; overflow-x:hidden; }}
 </style>
 </head>
 <body>
-<div id="header">{header_html}</div>
+<div id="header">
+  {header_html}
+  <button id="help-btn" onclick="document.getElementById('help-overlay').classList.add('show')">❓ Help &amp; tour</button>
+</div>
+
+<div id="help-overlay">
+  <div class="help-modal" onclick="event.stopPropagation()">
+    <div class="help-modal-header">
+      <h2>📖 Quick tour: NZ Climate Indicator Map</h2>
+      <button class="help-close-btn" onclick="document.getElementById('help-overlay').classList.remove('show')">✕</button>
+    </div>
+    <div class="help-tabs">
+      <button class="help-tab active" data-tab="big-picture">🎯 Big picture</button>
+      <button class="help-tab" data-tab="sidebar">🛠️ Sidebar controls</button>
+      <button class="help-tab" data-tab="maps">🗺️ The two maps</button>
+      <button class="help-tab" data-tab="timeline">▶️ Timeline &amp; playback</button>
+      <button class="help-tab" data-tab="charts">📈 Click for uncertainty</button>
+    </div>
+    <div class="help-body">
+
+      <div class="help-tab-content active" data-content="big-picture">
+        <h3>What you're looking at</h3>
+        <p>You see <strong>two maps side by side</strong>, animated through time:</p>
+        <ul>
+          <li><strong>Left panel (orange)</strong> — the projected absolute climate conditions (e.g. "12 hot days per year", "9.4 °C mean temperature")</li>
+          <li><strong>Right panel (blue)</strong> — the change compared to the historical baseline (e.g. "+5 days per year", "+1.8 °C")</li>
+        </ul>
+        <p>Each frame represents a future period (e.g. 2040–2059, 2080–2099). Press <strong>▶ Play</strong> to animate, or drag the timeline slider.</p>
+        <h3>Two downscaling methods</h3>
+        <p>Climate projections come from two different approaches — both are run for the same indicator so you can compare them directly:</p>
+        <ul>
+          <li>📊 <strong>Statistical (SD)</strong> — AI-based, 12 km grid · fast, captures statistical patterns from observations</li>
+          <li>🌀 <strong>Dynamical (DD)</strong> — physics-based regional climate model (CCAM), 5 km grid · resolves terrain and atmospheric processes</li>
+        </ul>
+        <p>Switch between them at the <strong>top of the sidebar</strong>. Maps update instantly, without losing your zoom or pan position. Comparing them tells you where the projections are robust (both methods agree) versus where method choice matters.</p>
+      </div>
+
+      <div class="help-tab-content" data-content="sidebar">
+        <h3>🔘 Top of sidebar — Downscaling method</h3>
+        <p>The <strong>📊 Statistical / 🌀 Dynamical</strong> toggle switches between the two downscaling methods.</p>
+        <div class="help-callout">💡 If you select a specific climate model that's only available in one method, the toggle locks to that method and shows a small warning. Switch back to <em>Ensemble mean</em> (or pick a ★ model) to unlock both methods.</div>
+        <h3>📋 The control form (Apply required)</h3>
+        <table>
+          <tr><th>Control</th><th>What it does</th></tr>
+          <tr><td><strong>Future scenario (SSP)</strong></td><td>Emissions pathway — from low (SSP1-2.6) to very high (SSP5-8.5)</td></tr>
+          <tr><td><strong>Baseline period</strong></td><td>The historical "today" reference (1995–2014 recommended)</td></tr>
+          <tr><td><strong>Indicator</strong></td><td>The climate variable to map. Grouped into Precipitation, Temperature, Wind, and Record indicators</td></tr>
+          <tr><td><strong>Season</strong></td><td>Annual or one of four seasons (DJF/MAM/JJA/SON)</td></tr>
+          <tr><td><strong>Model</strong></td><td><em>Ensemble mean</em> (average of all global models) or a single named model. ★ marks models available in <strong>both</strong> SD and DD</td></tr>
+          <tr><td><strong>▶ Apply</strong></td><td>Loads your selection. <strong>Required</strong> after changing settings — nothing updates until you press it</td></tr>
+        </table>
+        <h3>🎚️ Display options (lower sidebar)</h3>
+        <ul>
+          <li><strong>Overlay opacity</strong> — how transparent the data layer is over the basemap (left = more basemap visible, right = bolder colors)</li>
+          <li><strong>Animation speed</strong> — frame rate when playing the timeline (Very Slow → Fast)</li>
+        </ul>
+      </div>
+
+      <div class="help-tab-content" data-content="maps">
+        <h3>Two synced panels</h3>
+        <ul>
+          <li><strong>Left panel</strong> — <em>"Absolute"</em> (orange title): the values themselves, e.g. mean temperature in °C, days per year, mm/day</li>
+          <li><strong>Right panel</strong> — <em>"Δ Climate Change Signal"</em> (blue title): the difference vs. the historical baseline period</li>
+        </ul>
+        <p>Both maps <strong>pan and zoom together</strong> — drag or scroll one and the other follows. Use the +/− zoom buttons in the bottom-right corner.</p>
+        <h3>Color bars</h3>
+        <p>Each panel has its own color bar on the right edge, with the value scale and units. The change panel uses a diverging palette (e.g. red↔blue) centered on zero; the absolute panel uses a single-direction palette appropriate to the indicator.</p>
+        <h3>Hovering</h3>
+        <p>Move your mouse over either map to see a tooltip with the latitude/longitude, Δ change value, ◆ absolute value, and the current period in view.</p>
+        <h3>Borders</h3>
+        <p>Thin grey lines show NZ regional council boundaries. Darker lines mark the coastline. Both fade in detail as you zoom in.</p>
+      </div>
+
+      <div class="help-tab-content" data-content="timeline">
+        <h3>Playback controls</h3>
+        <ul>
+          <li><strong>▶ Play / ⏸ Pause</strong> — animate through time</li>
+          <li><strong>⏮ Reset</strong> — jump back to the first snapshot</li>
+          <li><strong>Slider</strong> — drag to any moment in the timeline</li>
+        </ul>
+        <h3>Reading the timeline ticks</h3>
+        <p>Below the slider you'll see two kinds of ticks:</p>
+        <ul>
+          <li><strong>Bold labels above the slider</strong> — actual data snapshots (e.g. "Historical 1995–2014", "2040–2059", "2080–2099")</li>
+          <li><strong>Small labels below</strong> — interpolated intermediate years</li>
+        </ul>
+        <p>The animation interpolates smoothly between snapshots so you see continuous change rather than discrete jumps. The colored pill row above the maps gives you the same snapshot list at a glance.</p>
+      </div>
+
+      <div class="help-tab-content" data-content="charts">
+        <h3>Click anywhere on a map</h3>
+        <p>Clicking a point on either map opens a <strong>time-series chart</strong> for that location:</p>
+        <ul>
+          <li><strong>Click the right (Δ) map</strong> → change-vs-baseline chart pops up on that map</li>
+          <li><strong>Click the left (absolute) map</strong> → absolute-values chart pops up on that map</li>
+        </ul>
+        <p>Both chart panels are <strong>draggable and resizable</strong> — drag the header to move, drag the bottom-right corner to resize, or click ✕ to close.</p>
+        <h3>What the bands mean</h3>
+        <p>Each chart shows the spread across the full climate-model ensemble at that location:</p>
+        <ul>
+          <li><strong>Filled band, lighter</strong> — 5th to 95th percentile (90% of models fall in this range)</li>
+          <li><strong>Filled band, darker</strong> — 25th to 75th percentile (the middle 50% of models)</li>
+          <li><strong>Solid bold line</strong> — ensemble mean (average across all models)</li>
+          <li><strong>Solid darker line</strong> — the specific model you selected (only shown when you picked a single model rather than "Ensemble mean")</li>
+        </ul>
+        <h3>Comparing methods on the chart</h3>
+        <p>The chart <strong>always shows both SD and DD at the same location</strong>, regardless of which method is currently displayed on the map:</p>
+        <ul>
+          <li>The <strong>active method</strong> appears as <strong>filled bands</strong> in its color (blue for SD, green for DD)</li>
+          <li>The <strong>other method</strong> appears as <strong>dashed bands</strong> in the alternate color</li>
+        </ul>
+        <p>This lets you see at a glance where the two methods agree on the projected change and where they diverge — i.e. which parts of a projection are robust and which are method-dependent.</p>
+        <h3>The vertical reference line</h3>
+        <p>The dashed vertical line tracks the current timeline position. It moves as you play or drag the slider, so you always know which period the maps are showing.</p>
+      </div>
+
+    </div>
+  </div>
+</div>
 
 <div id="maps-row">
   <div class="map-panel">
@@ -960,7 +1171,6 @@ var CHART_DATA = {{
 var COUNTRY_GEOJSON = {country_geojson_js};
 var REGIONS_GEOJSON = {regions_geojson_js};
 
-// ── Active method: respect lock first, then initial_method (from sidebar toggle state)
 var activeMethod = LOCKED_METHOD ? LOCKED_METHOD : {init_method_js};
 
 var mapOpts = {{
@@ -1057,7 +1267,6 @@ function _checkReady() {{
   }}
 }}
 
-// ── Lazy-load: active method eagerly, other method deferred ──────────────────
 function loadMethod(mth) {{
   FRAMES[mth].chg.forEach(function(b64, i) {{
     var img = new Image();
@@ -1605,6 +1814,23 @@ function makeDraggable(panel, wrapId) {{
 makeDraggable(document.getElementById('chart-panel'),     'map-wrap-a');
 makeDraggable(document.getElementById('chart-panel-abs'), 'map-wrap-b');
 
+// ── Help modal ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.help-tab').forEach(function(tab) {{
+  tab.addEventListener('click', function() {{
+    var target = this.dataset.tab;
+    document.querySelectorAll('.help-tab').forEach(function(t) {{ t.classList.remove('active'); }});
+    document.querySelectorAll('.help-tab-content').forEach(function(c) {{ c.classList.remove('active'); }});
+    this.classList.add('active');
+    document.querySelector('[data-content="' + target + '"]').classList.add('active');
+  }});
+}});
+document.getElementById('help-overlay').addEventListener('click', function(e) {{
+  if (e.target === this) this.classList.remove('show');
+}});
+document.addEventListener('keydown', function(e) {{
+  if (e.key === 'Escape') document.getElementById('help-overlay').classList.remove('show');
+}});
+
 }})();
 </script>
 </body>
@@ -1668,7 +1894,6 @@ if _STREAMLIT_ACTIVE:
         )
     if "method" not in st.session_state:
         st.session_state["method"] = "sd"
-    # Flag set when the indicator changes and we need to check model validity
     if "_pending_indicator_check" not in st.session_state:
         st.session_state["_pending_indicator_check"] = False
 
@@ -1683,7 +1908,6 @@ if _STREAMLIT_ACTIVE:
     if not indicators_avail:
         st.sidebar.warning("No data found for either downscaling method."); st.stop()
 
-    # ── Cache-based model availability for current applied config ─────────────
     _cfg_applied = st.session_state["applied"]
     _models_sd_applied, _models_dd_applied = get_models_from_cache(
         _cfg_applied["indicator"],
@@ -1694,7 +1918,6 @@ if _STREAMLIT_ACTIVE:
     _all_models_applied   = sorted(_models_sd_applied | _models_dd_applied)
     _shared_models_applied = _models_sd_applied & _models_dd_applied
 
-    # ── Check if a previously selected model is still valid after indicator change
     if st.session_state["_pending_indicator_check"]:
         st.session_state["_pending_indicator_check"] = False
         _prev_model = _cfg_applied["model_choice"]
@@ -1702,7 +1925,6 @@ if _STREAMLIT_ACTIVE:
             _in_sd = _prev_model in _models_sd_applied
             _in_dd = _prev_model in _models_dd_applied
             if not _in_sd and not _in_dd:
-                # Model not available for new indicator in either method — fall back
                 st.session_state["applied"]["model_choice"] = _MODEL_ENSEMBLE_MEAN
                 st.toast(
                     f"⚠️ Model **{_prev_model}** is not available for "
@@ -1813,11 +2035,9 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
                 ),
                 label_visibility="collapsed", index=_ind_idx, key="_sel_indicator")
 
-            # Use the selected indicator for downstream discovery (not yet applied)
             _preview_ind = (_sel_indicator if not _sel_indicator.startswith(_SEPARATOR_PREFIX)
                             else st.session_state["applied"]["indicator"])
 
-            # ── Season discovery ──────────────────────────────────────────────
             _applied_ind = st.session_state["applied"]["indicator"]
             if _ON_CLOUD:
                 _seasons_avail = []
@@ -1848,9 +2068,6 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
 
             st.subheader("Model")
 
-            # ── Model discovery: ALWAYS from uncertainty cache ─────────────────
-            # Use the *preview* indicator/ssp/bp/season so the dropdown updates
-            # immediately when the user changes the indicator before hitting Apply.
             _preview_models_sd, _preview_models_dd = get_models_from_cache(
                 _preview_ind, _sel_ssp, _sel_bp_tag, _sel_season
             )
@@ -1867,7 +2084,6 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
 
             _model_options = [_MODEL_ENSEMBLE_MEAN] + _avail_models
             _mod_default   = st.session_state["applied"]["model_choice"]
-            # If current model not in the new preview list, default to ensemble
             _mod_idx = (_model_options.index(_mod_default)
                         if _mod_default in _model_options else 0)
             _sel_model = st.selectbox("Model", _model_options,
@@ -1883,8 +2099,6 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
             if _sel_indicator.startswith(_SEPARATOR_PREFIX):
                 _sel_indicator = st.session_state["applied"]["indicator"]
 
-            # Guard: make sure chosen model is actually in the cache for this config.
-            # This is the authoritative check — no raw file scanning.
             _submit_models_sd, _submit_models_dd = get_models_from_cache(
                 _sel_indicator, _sel_ssp, _sel_bp_tag, _sel_season
             )
@@ -1897,7 +2111,6 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
                 ssp=_sel_ssp, bp_tag=_sel_bp_tag,
                 indicator=_sel_indicator, season=_sel_season, model_choice=_sel_model)
 
-            # If indicator changed, trigger the post-rerun availability check
             if _indicator_changed:
                 st.session_state["_pending_indicator_check"] = True
 
@@ -1911,16 +2124,12 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
         model_choice    = _cfg["model_choice"]
         selected_model_key = None if model_choice == _MODEL_ENSEMBLE_MEAN else model_choice
 
-        # ── Determine per-method model availability from cache (authoritative) ─
-        # These are for the *applied* config (what's actually rendered)
         _models_sd_current = _models_sd_applied
         _models_dd_current = _models_dd_applied
 
         _model_in_sd = (selected_model_key is None) or (selected_model_key in _models_sd_current)
         _model_in_dd = (selected_model_key is None) or (selected_model_key in _models_dd_current)
 
-        # Lock logic: only lock when a specific model is chosen and it's genuinely
-        # absent from one method's cache
         if selected_model_key is not None:
             if _model_in_sd and not _model_in_dd:
                 _locked_method = "sd"
@@ -1937,7 +2146,6 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
                     _current_method = "dd"
                     st.rerun()
             else:
-                # Present in both (or neither — treat as unlocked, ensemble fallback)
                 _locked_method = None
                 st.session_state["_model_locked_to"] = None
         else:
@@ -1996,7 +2204,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
     bp_short     = bp_tag.replace("bp","").replace("-","–")
     model_label  = selected_model_key if selected_model_key else "Ensemble mean"
 
-    # ── 1. Build timelines ────────────────────────────────────────────────────
     SNAPSHOTS_SD = build_timeline(indicator, bp_tag, ssp, season, method="sd")
     SNAPSHOTS_DD = build_timeline(indicator, bp_tag, ssp, season, method="dd")
     SNAPSHOTS = SNAPSHOTS_SD if SNAPSHOTS_SD else SNAPSHOTS_DD
@@ -2039,7 +2246,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
     with _map_slot.container():
         _components.html(build_loading_screen_html(nz_loader_svg_data(), height=630), height=630, scrolling=False)
 
-    # ── 2. Load uncertainty caches ────────────────────────────────────────────
     _unc_sd = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd")
     _unc_dd = load_uncertainty_cache(indicator, ssp, bp_tag, season, method="dd")
 
@@ -2074,8 +2280,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         def _reindex(band):
             return np.stack([_get_row(band, yr) for _,_,_,_,yr in SNAPSHOTS], axis=0)
 
-        # ── Model vs ensemble selection ───────────────────────────────────────
-        # Check if this specific method has the selected model in its cache
         _this_method_has_model = (
             selected_model_key is not None and
             selected_model_key in unc.get("model_change_vals", {})
@@ -2132,7 +2336,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
     _dd_lat_v = _dat_dd["lat_v"] if _dat_dd["lat_v"] is not None else _fallback_lat_v
     _dd_lon_v = _dat_dd["lon_v"] if _dat_dd["lon_v"] is not None else _fallback_lon_v
 
-    # ── 3. Colour ranges ──────────────────────────────────────────────────────
     with st.spinner("Computing colour ranges…"):
         shared_half      = compute_color_range(indicator)
         abs_vmin, abs_vmax = compute_abs_color_range(indicator)
@@ -2140,7 +2343,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
     _chg_vmin = 0.0 if indicator in _REC_INDICATORS else -shared_half
     _chg_vmax = 100.0 if indicator in _REC_INDICATORS else shared_half
 
-    # ── 4. Render frames ──────────────────────────────────────────────────────
     def _compute_hover_thresh(lat_v, lon_v):
         from scipy.spatial import KDTree
         def merc(l): return np.log(np.tan(np.pi/4 + np.deg2rad(l)/2))
@@ -2191,7 +2393,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
     thresh    = _compute_hover_thresh(_sd_lat_v, _sd_lon_v)
     thresh_dd = _compute_hover_thresh(_dd_lat_v, _dd_lon_v)
 
-    # ── 5. Colour bars ────────────────────────────────────────────────────────
     units_note     = "%" if indicator in _REC_INDICATORS else f"Δ {INDICATOR_UNITS.get(indicator,'')}"
     abs_units_note = _REC_ABS_UNITS.get(indicator,"") if indicator in _REC_INDICATORS else INDICATOR_UNITS.get(indicator,"")
 
@@ -2201,12 +2402,10 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         cb_abs = render_colorbar_b64(abs_vmin, abs_vmax, colorscale_abs, abs_units_note,
                                       indicator=indicator, is_change=False)
 
-    # ── 6. Virtual frame timeline ─────────────────────────────────────────────
     snap_years     = [yr    for _,_,_,_,yr    in SNAPSHOTS]
     snap_labels    = [label for label,_,_,_,_ in SNAPSHOTS]
     frame_years_all, snap_frame_idx = compute_frame_timeline(snap_years, YEAR_STEP)
 
-    # ── 7. Hover value stacks ─────────────────────────────────────────────────
     def _safe_tolist(arr):
         if arr is None: return None
         return [row.tolist() for row in arr]
@@ -2220,7 +2419,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         if arr is None: return None
         return [row.tolist() for row in arr]
 
-    # ── 8. Build player ───────────────────────────────────────────────────────
     _borders = load_borders_geojson()
 
     header_html = (
@@ -2285,7 +2483,6 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
     with _map_slot.container():
         _components.html(player_html, height=630, scrolling=False)
 
-    # ── 9. Summary statistics ─────────────────────────────────────────────────
     st.markdown("""
 <style>
 [data-testid="stMetricValue"] { font-size:1.05rem !important; font-weight:600; }

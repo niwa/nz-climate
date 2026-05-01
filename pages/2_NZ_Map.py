@@ -1,6 +1,7 @@
 # pages/2_NZ_Map.py — dual-method instant toggle edition
 """
 NZ Climate Indicator Map — dual-panel (absolute + change) animated timeline.
+Model availability is detected from precomputed uncertainty caches only.
 """
 
 from pathlib import Path
@@ -20,16 +21,24 @@ header[data-testid="stHeader"] {
     min-height: 0px !important;
     overflow: hidden !important;
 }
-div.block-container { padding-top: 2.5rem; }
-[data-baseweb="tooltip"]  { pointer-events: none !important; }
-[role="tooltip"]           { pointer-events: none !important; }
-[data-testid="collapsedControl"] { display: none !important; }
-section[data-testid="stSidebar"] {
-    transform: none !important;
-    min-width: 21rem !important;
-    width: 21rem !important;
-}
 </style>
+<script>
+(function() {
+    function fixBtn() {
+        var btn = document.querySelector('[data-testid="collapsedControl"]');
+        if (!btn) return;
+        btn.style.setProperty('visibility', 'visible', 'important');
+        btn.style.setProperty('display',    'flex',    'important');
+        btn.style.setProperty('position',   'fixed',   'important');
+        btn.style.setProperty('top',        '0.5rem',  'important');
+        btn.style.setProperty('left',       '0.5rem',  'important');
+        btn.style.setProperty('z-index',    '999999',  'important');
+    }
+    fixBtn();
+    var obs = new MutationObserver(fixBtn);
+    obs.observe(document.body, { childList: true, subtree: true });
+})();
+</script>
 """, unsafe_allow_html=True)
 
 try:
@@ -114,15 +123,47 @@ _TEMP_INDICATORS_GROUP   = {"FD","TN","TNn","TX","TX25","TX30","TXx"}
 _WIND_INDICATORS_GROUP   = {"sfcwind","Wd10","Wd25","Wd99pVAL","Wx1day"}
 _SEPARATOR_PREFIX        = "╌╌"
 
+_MODEL_ENSEMBLE_MEAN = "Ensemble mean (all models)"
+
+
+# ── Cache-driven model discovery ───────────────────────────────────────────────
+@st.cache_data(show_spinner=False, ttl=300)
+def get_models_from_cache(indicator, ssp, bp_tag, season):
+    """
+    Return (models_in_sd, models_in_dd) as frozensets, detected purely from
+    precomputed uncertainty caches — the single source of truth for what is
+    actually renderable.
+    """
+    unc_sd = _load_uncertainty_cache_raw(indicator, ssp, bp_tag, season, method="sd")
+    unc_dd = _load_uncertainty_cache_raw(indicator, ssp, bp_tag, season, method="dd")
+
+    models_sd = frozenset(unc_sd.get("model_change_vals", {}).keys()) if unc_sd else frozenset()
+    models_dd = frozenset(unc_dd.get("model_change_vals", {}).keys()) if unc_dd else frozenset()
+    return models_sd, models_dd
+
+
+def _load_uncertainty_cache_raw(indicator, ssp, bp_tag, season, method="sd"):
+    """Low-level cache loader without Streamlit caching (used internally)."""
+    key  = hashlib.md5(f"{indicator}|{ssp}|{bp_tag}|{season}".encode()).hexdigest()
+    cache_dir = (_uncertainty_cache_dir(method))
+    path = cache_dir / f"{key}.pkl"
+    if _ON_CLOUD:
+        try:
+            return load_pkl_blob(path)
+        except Exception:
+            return None
+    if not path.exists():
+        return None
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
 # ── Coordinate helper ─────────────────────────────────────────────────────────
 def _pick_coord(ds, priority):
-    """Return the best-matching coordinate name from an xarray Dataset.
-
-    Prefers 2-D arrays (true geographic lat/lon) over 1-D rotated-pole axes
-    (rlat/rlon) so that CCAM dynamical-downscaling files are handled correctly.
-    """
     candidates = list(ds.coords) + list(ds.dims) + list(ds.data_vars)
-    # First pass: prefer 2-D geographic arrays
     for name in priority:
         for c in candidates:
             if c.lower() == name:
@@ -131,14 +172,14 @@ def _pick_coord(ds, priority):
                         return c
                 except Exception:
                     pass
-    # Second pass: accept any dimensionality
     for name in priority:
         for c in candidates:
             if c.lower() == name:
                 return c
     return None
 
-# ── File discovery ────────────────────────────────────────────────────────────
+
+# ── File discovery (kept for non-cloud season/fp discovery) ──────────────────
 def _indicator_root(indicator, method="sd"):
     if method == "dd": return REC_ROOT_DD if indicator in _REC_INDICATORS else DATA_ROOT_DD
     return REC_ROOT if indicator in _REC_INDICATORS else DATA_ROOT
@@ -182,25 +223,6 @@ def discover_fp_tags(scenario, indicator, bp_tag, season, method="sd"):
             if m: tags.add(m.group(1))
     return sorted(tags, key=lambda t: int(re.search(r"fp(\d{4})", t).group(1)))
 
-def discover_models(scenario, indicator, bp_tag, season, method="sd"):
-    folder = _indicator_root(indicator, method) / scenario / "static_maps" / indicator
-    if not folder.exists(): return []
-    if method == "dd":
-        pat = re.compile(rf"^{re.escape(indicator)}_{re.escape(scenario)}_(.+?)_CCAM_")
-    else:
-        pat = re.compile(rf"^{re.escape(indicator)}_{re.escape(scenario)}_(.+?)_[ri]\d+[ip]\d+[pf]\d+(?:f\d+)?_")
-    models = set()
-    for f in folder.glob("*.nc"):
-        if f"_{season}_" not in f.name: continue
-        if scenario == "historical":
-            if "_base_" not in f.name or f"_{bp_tag}_" not in f.name: continue
-        else:
-            if "_change_" not in f.name or f"_{bp_tag}_" not in f.name: continue
-        if method == "dd" and not f.name.endswith("_bc.nc"): continue
-        m = pat.match(f.name)
-        if m: models.add(m.group(1))
-    return sorted(models)
-
 def find_nc_files(scenario, indicator, fp_tag, bp_tag, season, model_key=None, method="sd"):
     folder = _indicator_root(indicator, method) / scenario / "static_maps" / indicator
     if not folder.exists(): return []
@@ -217,22 +239,6 @@ def find_nc_files(scenario, indicator, fp_tag, bp_tag, season, model_key=None, m
     return sorted(f for f in folder.glob("*.nc")
                   if f"_{fp_tag}_" in f.name and f"_{bp_tag}_" in f.name and _ok(f))
 
-def _group_files_by_model(files, method="sd"):
-    from collections import defaultdict
-    if method == "dd":
-        pat = re.compile(r"_([^_]+)_CCAM_")
-    else:
-        pat = re.compile(r"_([^_]+)_r\d+i\d+p\d+")
-    groups = defaultdict(list)
-    ungrouped = []
-    for f in files:
-        m = pat.search(f.name)
-        if m: groups[m.group(1)].append(f)
-        else: ungrouped.append(f)
-    for i, f in enumerate(ungrouped):
-        groups[f"_ungrouped_{i}"].append(f)
-    return dict(groups)
-
 def _build_grouped_indicator_options(indicators):
     precip = sorted(i for i in indicators if i in _PRECIP_INDICATORS_GROUP)
     temp   = sorted(i for i in indicators if i in _TEMP_INDICATORS_GROUP)
@@ -248,6 +254,7 @@ def _build_grouped_indicator_options(indicators):
     if other:  opts += [f"{_SEPARATOR_PREFIX} Other"]         + other
     if rec:    opts += [f"{_SEPARATOR_PREFIX}━ Record Indicators ━"] + rec
     return opts
+
 
 # ── Data loaders ──────────────────────────────────────────────────────────────
 def load_ensemble_mean(scenario, indicator, fp_tag, bp_tag, season,
@@ -323,6 +330,7 @@ def build_timeline(indicator, bp_tag, ssp, season, method="sd"):
         yr = fp_centre_year(fp)
         snapshots.append((fp.replace("fp","").replace("-","–"), ssp, fp, bp_tag, yr))
     return sorted(snapshots, key=lambda x: x[4])
+
 
 # ── Colour ranges ─────────────────────────────────────────────────────────────
 _COLOR_RANGES_PATH     = Path(__file__).parent.parent / "assets/color_ranges/color_ranges.json"
@@ -427,6 +435,7 @@ def _log_mode(indicator, is_change):
     if not is_change and indicator in _LOG_INDICATORS: return "log"
     return "linear"
 
+
 # ── Frame cache ───────────────────────────────────────────────────────────────
 FRAME_CACHE_DIR_SD = Path("assets/frame_cache")
 FRAME_CACHE_DIR_DD = Path("assets/frame_cache_dd")
@@ -461,6 +470,7 @@ def _save_frame_cache(key, payload, method="sd"):
     path = _frame_cache_dir(method) / f"{key}.pkl"
     with open(path, "wb") as f: pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+
 # ── Uncertainty cache ─────────────────────────────────────────────────────────
 def _uncertainty_cache_dir(method="sd"):
     if _DEMO_MODE: return _DEMO_DATA_ROOT / "uncertainty_cache"
@@ -484,6 +494,7 @@ def load_uncertainty_cache(indicator, ssp, bp_tag, season, method="sd"):
         with open(path, "rb") as f: return pickle.load(f)
     except Exception: return None
 
+
 # ── Virtual frame timeline ────────────────────────────────────────────────────
 def compute_frame_timeline(snap_years, year_step):
     frame_years, snap_frame_idx = [], []
@@ -496,6 +507,7 @@ def compute_frame_timeline(snap_years, year_step):
             frame_years.append(ya + step / n_steps * (yb - ya)); fi += 1
     snap_frame_idx.append(fi); frame_years.append(snap_years[-1])
     return frame_years, snap_frame_idx
+
 
 # ── Geometry loaders ──────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
@@ -558,6 +570,7 @@ def load_borders_geojson():
         except Exception: pass
     return out
 
+
 # ── Snapshot renderer ─────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, max_entries=24)
 def prerender_snapshots(lat_v, lon_v, snap_data_stacked, vmin, vmax,
@@ -606,7 +619,6 @@ def prerender_snapshots(lat_v, lon_v, snap_data_stacked, vmin, vmax,
     _, _near_idx = distance_transform_edt(~land_mask, return_indices=True)
     near_row, near_col = _near_idx[0], _near_idx[1]
     _hard_alpha = land_mask.astype(np.float32)
-    # Slightly higher floor and multiplier for finer DD grids
     _grid_spacing_px = grid_spacing_rad / (lon_max_rad - lon_min_rad) * out_w
     _SIGMA = max(6.0, _grid_spacing_px * 2.2)
 
@@ -649,6 +661,7 @@ def prerender_snapshots(lat_v, lon_v, snap_data_stacked, vmin, vmax,
 
     snap_b64 = [_render(snap_data_stacked[i]) for i in range(n_snaps)]
     return snap_b64, lat_min, lat_max, lon_min, lon_max, float(np.rad2deg(mask_threshold))
+
 
 # ── Colourbar renderer ────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, max_entries=24)
@@ -702,6 +715,7 @@ def build_html_player(
     dd_mask_threshold_deg,
     frame_ms, dot_opacity, header_html,
     initial_method,
+    locked_method=None,
     country_geojson=None, regions_geojson=None,
 ) -> str:
     import json as _json
@@ -735,6 +749,7 @@ def build_html_player(
     country_geojson_js = country_geojson if country_geojson else "null"
     regions_geojson_js = regions_geojson if regions_geojson else "null"
     init_method_js     = _json.dumps(initial_method)
+    locked_method_js   = _json.dumps(locked_method)
     sd_vals_js     = _enc(sd_hover_vals)
     sd_abs_vals_js = _enc(sd_hover_abs_vals)
     dd_vals_js     = _enc(dd_hover_vals)
@@ -894,6 +909,8 @@ var N            = YEARS.length;
 var MS           = {frame_ms};
 var INIT_OPACITY = {dot_opacity:.2f};
 
+var LOCKED_METHOD = {locked_method_js};
+
 var BOUNDS = {{
   sd: {{ latMin:{lat_min:.4f}, latMax:{lat_max:.4f}, lonMin:{lon_min:.4f}, lonMax:{lon_max:.4f}, thresh:{mask_threshold_deg:.5f} }},
   dd: {{ latMin:{dd_lat_min:.4f}, latMax:{dd_lat_max:.4f}, lonMin:{dd_lon_min:.4f}, lonMax:{dd_lon_max:.4f}, thresh:{dd_mask_threshold_deg:.5f} }},
@@ -908,7 +925,6 @@ var HOVER_LATS = {{ sd: {sd_hover_lats_js}, dd: {dd_hover_lats_js} }};
 var HOVER_LONS = {{ sd: {sd_hover_lons_js}, dd: {dd_hover_lons_js} }};
 var HOVER_UNITS  = {hover_units_js};
 var ABS_UNITS    = {abs_units_js};
-var HOVER_THRESH = BOUNDS[{init_method_js}].thresh;
 
 var FRAMES = {{
   sd: {{ chg: {sd_snap_b64_js}, abs: {sd_snap_abs_js} }},
@@ -944,9 +960,8 @@ var CHART_DATA = {{
 var COUNTRY_GEOJSON = {country_geojson_js};
 var REGIONS_GEOJSON = {regions_geojson_js};
 
-var _storedMethod = null;
-try {{ _storedMethod = localStorage.getItem('nzmap_active_method'); }} catch(e) {{}}
-var activeMethod = (_storedMethod === 'sd' || _storedMethod === 'dd') ? _storedMethod : {init_method_js};
+// ── Active method: respect lock first, then initial_method (from sidebar toggle state)
+var activeMethod = LOCKED_METHOD ? LOCKED_METHOD : {init_method_js};
 
 var mapOpts = {{
   center: [{center_lat:.3f}, {center_lon:.3f}],
@@ -1042,9 +1057,8 @@ function _checkReady() {{
   }}
 }}
 
-['sd','dd'].forEach(function(mth) {{
-  snapImgsChg[mth] = new Array(FRAMES[mth].chg.length);
-  snapImgsAbs[mth] = new Array(FRAMES[mth].abs.length);
+// ── Lazy-load: active method eagerly, other method deferred ──────────────────
+function loadMethod(mth) {{
   FRAMES[mth].chg.forEach(function(b64, i) {{
     var img = new Image();
     img.onload = function() {{ snapImgsChg[mth][i] = img; _loadCounts[mth].chg++; _checkReady(); }};
@@ -1055,6 +1069,16 @@ function _checkReady() {{
     img.onload = function() {{ snapImgsAbs[mth][i] = img; _loadCounts[mth].abs++; _checkReady(); }};
     img.src = 'data:image/png;base64,' + b64;
   }});
+}}
+
+['sd','dd'].forEach(function(mth) {{
+  snapImgsChg[mth] = new Array(FRAMES[mth].chg.length);
+  snapImgsAbs[mth] = new Array(FRAMES[mth].abs.length);
+  if (mth !== activeMethod) {{
+    setTimeout(function() {{ loadMethod(mth); }}, 2000);
+  }} else {{
+    loadMethod(mth);
+  }}
 }});
 
 function _redrawBoth() {{
@@ -1123,12 +1147,14 @@ function showFrame(fi) {{
 }}
 
 window.switchMethod = function(mth) {{
+  if (LOCKED_METHOD && mth !== LOCKED_METHOD) return;
   if (mth === activeMethod) return;
   if (_loadCounts[mth].chg < _loadTotals[mth].chg ||
-      _loadCounts[mth].abs < _loadTotals[mth].abs) return;
+      _loadCounts[mth].abs < _loadTotals[mth].abs) {{
+    setTimeout(function() {{ window.switchMethod(mth); }}, 500);
+    return;
+  }}
   activeMethod = mth;
-  try {{ localStorage.setItem('nzmap_active_method', mth); }} catch(e) {{}}
-  HOVER_THRESH = BOUNDS[mth].thresh;
   updateColorbars();
   repositionCanvas(mapA, ovA);
   repositionCanvas(mapB, ovB);
@@ -1160,7 +1186,7 @@ window.addEventListener('message', function(e) {{
     if (typeof e.data.opacity === 'number') {{ ovA.oc.style.opacity=e.data.opacity; ovB.oc.style.opacity=e.data.opacity; }}
     if (typeof e.data.frameMs === 'number') MS = e.data.frameMs;
   }}
-  if (e.data.type === 'nzmap_method' && e.data.method) {{ switchMethod(e.data.method); }}
+  if (e.data.type === 'nzmap_method' && e.data.method) {{ window.switchMethod(e.data.method); }}
 }});
 
 function buildTicks() {{
@@ -1216,6 +1242,10 @@ function nearestPoint(lat, lon) {{
   return {{idx:best, dist:Math.sqrt(bestDist)}};
 }}
 
+function getHoverThresh() {{
+  return BOUNDS[activeMethod].thresh;
+}}
+
 function showTip(e, nn) {{
   var m = activeMethod;
   var lats = HOVER_LATS[m], lons = HOVER_LONS[m];
@@ -1236,7 +1266,7 @@ var _hThrottle = null;
 function onMapMousemove(e) {{
   if (_hThrottle) return; _hThrottle=setTimeout(function(){{_hThrottle=null;}},30);
   var nn = nearestPoint(e.latlng.lat, e.latlng.lng);
-  if (nn.dist > HOVER_THRESH) {{ tip.style.display='none'; return; }}
+  if (nn.dist > getHoverThresh()) {{ tip.style.display='none'; return; }}
   var absVals = HOVER_VALS[activeMethod].abs;
   if (absVals) {{
     var absVal = interpVal(absVals, nn.idx, current);
@@ -1347,9 +1377,6 @@ function buildDatasets(panelType, pinIdx) {{
   var otherCD = CHART_DATA[oth][panelType];
   var snapYrs = SNAP_IDX.map(function(i){{ return YEARS[i]; }});
 
-  // Geographic nearest-point remap: pinIdx is in active method's grid.
-  // A direct index reuse is wrong — SD ~3k pts, DD ~60k pts, so index N
-  // in one grid points to a completely different location in the other.
   var otherPinIdx = -1;
   if (otherCD) {{
     var _pLat  = HOVER_LATS[m][pinIdx];
@@ -1527,7 +1554,7 @@ function showAbsChartPanel(ptIdx, lat, lon) {{
 
 mapA.on('click', function(e) {{
   var nn = nearestPoint(e.latlng.lat, e.latlng.lng);
-  if (nn.dist > HOVER_THRESH) return;
+  if (nn.dist > getHoverThresh()) return;
   var chgVals = HOVER_VALS[activeMethod].chg;
   var absVals = HOVER_VALS[activeMethod].abs;
   if (!chgVals) return;
@@ -1542,7 +1569,7 @@ mapA.on('click', function(e) {{
 }});
 mapB.on('click', function(e) {{
   var nn = nearestPoint(e.latlng.lat, e.latlng.lng);
-  if (nn.dist > HOVER_THRESH) return;
+  if (nn.dist > getHoverThresh()) return;
   var absVals = HOVER_VALS[activeMethod].abs;
   if (!absVals) return;
   var val = interpVal(absVals, nn.idx, current);
@@ -1614,12 +1641,8 @@ if not HAS_PLOTLY:   st.error("**`plotly` is not installed.**"); st.stop()
 if not _ON_CLOUD and not DATA_ROOT.exists():
     st.error(f"Data directory **`{DATA_ROOT}`** not found.\n\nRun: `python test/generate_demo_data.py`"); st.stop()
 
-_MODEL_ENSEMBLE_MEAN = "Ensemble mean (all models)"
 
 # ── Module import guard ───────────────────────────────────────────────────────
-# precompute_*.py scripts import this file via importlib.exec_module() to reuse
-# functions and constants. Without this guard the entire app body below executes
-# during that import — crashing because there is no Streamlit session or caches.
 _STREAMLIT_ACTIVE = False
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx as _get_ctx
@@ -1629,9 +1652,9 @@ except Exception:
 
 if _STREAMLIT_ACTIVE:
 
-    # ── Sidebar ───────────────────────────────────────────────────────────────
     import streamlit.components.v1 as _sc
 
+    # ── Session state initialisation ──────────────────────────────────────────
     if "applied" not in st.session_state:
         if _ON_CLOUD:
             _seed_ind = "TX"
@@ -1645,6 +1668,9 @@ if _STREAMLIT_ACTIVE:
         )
     if "method" not in st.session_state:
         st.session_state["method"] = "sd"
+    # Flag set when the indicator changes and we need to check model validity
+    if "_pending_indicator_check" not in st.session_state:
+        st.session_state["_pending_indicator_check"] = False
 
     _current_method = st.session_state["method"]
 
@@ -1656,6 +1682,35 @@ if _STREAMLIT_ACTIVE:
 
     if not indicators_avail:
         st.sidebar.warning("No data found for either downscaling method."); st.stop()
+
+    # ── Cache-based model availability for current applied config ─────────────
+    _cfg_applied = st.session_state["applied"]
+    _models_sd_applied, _models_dd_applied = get_models_from_cache(
+        _cfg_applied["indicator"],
+        _cfg_applied["ssp"],
+        _cfg_applied["bp_tag"],
+        _cfg_applied["season"],
+    )
+    _all_models_applied   = sorted(_models_sd_applied | _models_dd_applied)
+    _shared_models_applied = _models_sd_applied & _models_dd_applied
+
+    # ── Check if a previously selected model is still valid after indicator change
+    if st.session_state["_pending_indicator_check"]:
+        st.session_state["_pending_indicator_check"] = False
+        _prev_model = _cfg_applied["model_choice"]
+        if _prev_model != _MODEL_ENSEMBLE_MEAN:
+            _in_sd = _prev_model in _models_sd_applied
+            _in_dd = _prev_model in _models_dd_applied
+            if not _in_sd and not _in_dd:
+                # Model not available for new indicator in either method — fall back
+                st.session_state["applied"]["model_choice"] = _MODEL_ENSEMBLE_MEAN
+                st.toast(
+                    f"⚠️ Model **{_prev_model}** is not available for "
+                    f"**{_cfg_applied['indicator']}** in either method. "
+                    f"Switched to Ensemble mean.",
+                    icon="⚠️",
+                )
+                st.rerun()
 
     with st.sidebar:
         logo_path = Path("logos/esnz_logo_horz_new.png")
@@ -1673,7 +1728,9 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
 }}
 .m-btn.active-sd {{ background:#4a90d9; color:#fff; box-shadow:0 1px 4px rgba(74,144,217,0.4); }}
 .m-btn.active-dd {{ background:#22a822; color:#fff; box-shadow:0 1px 4px rgba(34,168,34,0.4); }}
+.m-btn.disabled  {{ opacity:0.35; cursor:not-allowed; }}
 .caption {{ font-size:11px; color:#888; margin-top:6px; }}
+#lock-msg {{ font-size:11px; color:#b05000; margin-top:4px; display:none; }}
 </style>
 <span class="lbl">Downscaling method</span>
 <div class="toggle-wrap">
@@ -1681,14 +1738,39 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
   <button class="m-btn" id="btn-dd" onclick="pick('dd')">🌀 Dynamical</button>
 </div>
 <div class="caption">Statistical = AI 12 km · Dynamical = CCAM 5 km</div>
+<div id="lock-msg"></div>
 <script>
 (function() {{
   var active = '{_current_method}';
+  var locked = {_json.dumps(
+      "sd" if st.session_state.get("_model_locked_to") == "sd"
+      else "dd" if st.session_state.get("_model_locked_to") == "dd"
+      else None
+  )};
+
   function render() {{
-    document.getElementById('btn-sd').className = 'm-btn' + (active==='sd' ? ' active-sd' : '');
-    document.getElementById('btn-dd').className = 'm-btn' + (active==='dd' ? ' active-dd' : '');
+    var sdBtn = document.getElementById('btn-sd');
+    var ddBtn = document.getElementById('btn-dd');
+    var lockMsg = document.getElementById('lock-msg');
+    sdBtn.className = 'm-btn' + (active==='sd' ? ' active-sd' : '');
+    ddBtn.className = 'm-btn' + (active==='dd' ? ' active-dd' : '');
+    if (locked === 'sd') {{
+      ddBtn.classList.add('disabled');
+      ddBtn.title = 'Not available for this model';
+      lockMsg.style.display = 'block';
+      lockMsg.textContent = '⚠️ Locked to Statistical — model not in Dynamical';
+    }} else if (locked === 'dd') {{
+      sdBtn.classList.add('disabled');
+      sdBtn.title = 'Not available for this model';
+      lockMsg.style.display = 'block';
+      lockMsg.textContent = '⚠️ Locked to Dynamical — model not in Statistical';
+    }} else {{
+      lockMsg.style.display = 'none';
+    }}
   }}
+
   window.pick = function(mth) {{
+    if (locked && mth !== locked) return;
     if (mth === active) return;
     active = mth;
     render();
@@ -1700,7 +1782,7 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
   render();
 }})();
 </script>
-""", height=90)
+""", height=105)
 
         st.markdown("---")
 
@@ -1731,9 +1813,12 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
                 ),
                 label_visibility="collapsed", index=_ind_idx, key="_sel_indicator")
 
-            _applied_ind = st.session_state["applied"]["indicator"]
+            # Use the selected indicator for downstream discovery (not yet applied)
+            _preview_ind = (_sel_indicator if not _sel_indicator.startswith(_SEPARATOR_PREFIX)
+                            else st.session_state["applied"]["indicator"])
 
-            # ── Season discovery: use uncertainty cache on cloud ──────────────
+            # ── Season discovery ──────────────────────────────────────────────
+            _applied_ind = st.session_state["applied"]["indicator"]
             if _ON_CLOUD:
                 _seasons_avail = []
                 for _s in SEASON_LABELS:
@@ -1762,38 +1847,33 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
                 _sel_season = SEASON_ANN
 
             st.subheader("Model")
-            _cfg = st.session_state["applied"]
 
-            # ── Model discovery: use uncertainty cache on cloud ───────────────
-            if _ON_CLOUD:
-                _unc_sd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
-                                                       _cfg["bp_tag"], _cfg["season"], method="sd")
-                _unc_dd_probe = load_uncertainty_cache(_applied_ind, _cfg["ssp"],
-                                                       _cfg["bp_tag"], _cfg["season"], method="dd")
-                _models_sd = set(_unc_sd_probe["model_change_vals"].keys()) if _unc_sd_probe else set()
-                _models_dd = set(_unc_dd_probe["model_change_vals"].keys()) if _unc_dd_probe else set()
-            else:
-                _models_sd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
-                                                 _cfg["season"], method="sd"))
-                _models_dd = set(discover_models(_cfg["ssp"], _applied_ind, _cfg["bp_tag"],
-                                                 _cfg["season"], method="dd"))
-
-            _avail_models = sorted(_models_sd | _models_dd)
-            _shared_models = _models_sd & _models_dd
+            # ── Model discovery: ALWAYS from uncertainty cache ─────────────────
+            # Use the *preview* indicator/ssp/bp/season so the dropdown updates
+            # immediately when the user changes the indicator before hitting Apply.
+            _preview_models_sd, _preview_models_dd = get_models_from_cache(
+                _preview_ind, _sel_ssp, _sel_bp_tag, _sel_season
+            )
+            _avail_models    = sorted(_preview_models_sd | _preview_models_dd)
+            _shared_models   = _preview_models_sd & _preview_models_dd
 
             def _model_label(m):
                 if m == _MODEL_ENSEMBLE_MEAN: return m
                 tags = []
-                if m in _models_sd: tags.append("SD")
-                if m in _models_dd: tags.append("DD")
-                return f"{m} [{'/'.join(tags)}]{'  ★' if m in _shared_models else ''}"
+                if m in _preview_models_sd: tags.append("SD")
+                if m in _preview_models_dd: tags.append("DD")
+                star = "  ★" if m in _shared_models else ""
+                return f"{m} [{'/'.join(tags)}]{star}"
 
             _model_options = [_MODEL_ENSEMBLE_MEAN] + _avail_models
-            _mod_default   = _cfg["model_choice"]
-            _mod_idx       = (_model_options.index(_mod_default) if _mod_default in _model_options else 0)
+            _mod_default   = st.session_state["applied"]["model_choice"]
+            # If current model not in the new preview list, default to ensemble
+            _mod_idx = (_model_options.index(_mod_default)
+                        if _mod_default in _model_options else 0)
             _sel_model = st.selectbox("Model", _model_options,
                 format_func=_model_label, label_visibility="collapsed",
-                help=f"★ = available in both methods ({len(_shared_models)} shared)",
+                help=(f"★ = available in both methods ({len(_shared_models)} shared)  |  "
+                      f"Labels show which methods each model appears in"),
                 index=_mod_idx, key="_sel_model")
 
             st.markdown("---")
@@ -1802,15 +1882,25 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
         if _submitted:
             if _sel_indicator.startswith(_SEPARATOR_PREFIX):
                 _sel_indicator = st.session_state["applied"]["indicator"]
-            _valid_sd = [_MODEL_ENSEMBLE_MEAN] + list(discover_models(
-                _sel_ssp, _sel_indicator, _sel_bp_tag, _sel_season, method="sd"))
-            _valid_dd = [_MODEL_ENSEMBLE_MEAN] + list(discover_models(
-                _sel_ssp, _sel_indicator, _sel_bp_tag, _sel_season, method="dd"))
-            if _sel_model not in (_valid_sd + _valid_dd):
+
+            # Guard: make sure chosen model is actually in the cache for this config.
+            # This is the authoritative check — no raw file scanning.
+            _submit_models_sd, _submit_models_dd = get_models_from_cache(
+                _sel_indicator, _sel_ssp, _sel_bp_tag, _sel_season
+            )
+            _valid_model_set = _submit_models_sd | _submit_models_dd | {_MODEL_ENSEMBLE_MEAN}
+            if _sel_model not in _valid_model_set:
                 _sel_model = _MODEL_ENSEMBLE_MEAN
+
+            _indicator_changed = (_sel_indicator != st.session_state["applied"]["indicator"])
             st.session_state["applied"] = dict(
                 ssp=_sel_ssp, bp_tag=_sel_bp_tag,
                 indicator=_sel_indicator, season=_sel_season, model_choice=_sel_model)
+
+            # If indicator changed, trigger the post-rerun availability check
+            if _indicator_changed:
+                st.session_state["_pending_indicator_check"] = True
+
             st.rerun()
 
         _cfg            = st.session_state["applied"]
@@ -1819,8 +1909,42 @@ body {{ margin:0; padding:4px 4px 8px; font-family:Arial,sans-serif; background:
         indicator       = _cfg["indicator"]
         season          = _cfg["season"]
         model_choice    = _cfg["model_choice"]
-        method          = _current_method
         selected_model_key = None if model_choice == _MODEL_ENSEMBLE_MEAN else model_choice
+
+        # ── Determine per-method model availability from cache (authoritative) ─
+        # These are for the *applied* config (what's actually rendered)
+        _models_sd_current = _models_sd_applied
+        _models_dd_current = _models_dd_applied
+
+        _model_in_sd = (selected_model_key is None) or (selected_model_key in _models_sd_current)
+        _model_in_dd = (selected_model_key is None) or (selected_model_key in _models_dd_current)
+
+        # Lock logic: only lock when a specific model is chosen and it's genuinely
+        # absent from one method's cache
+        if selected_model_key is not None:
+            if _model_in_sd and not _model_in_dd:
+                _locked_method = "sd"
+                st.session_state["_model_locked_to"] = "sd"
+                if _current_method != "sd":
+                    st.session_state["method"] = "sd"
+                    _current_method = "sd"
+                    st.rerun()
+            elif _model_in_dd and not _model_in_sd:
+                _locked_method = "dd"
+                st.session_state["_model_locked_to"] = "dd"
+                if _current_method != "dd":
+                    st.session_state["method"] = "dd"
+                    _current_method = "dd"
+                    st.rerun()
+            else:
+                # Present in both (or neither — treat as unlocked, ensemble fallback)
+                _locked_method = None
+                st.session_state["_model_locked_to"] = None
+        else:
+            _locked_method = None
+            st.session_state["_model_locked_to"] = None
+
+        method = _current_method
 
         colorscale     = colorscale_for(indicator)
         colorscale_abs = colorscale_abs_for(indicator)
@@ -1927,7 +2051,7 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
 
     from scipy.spatial import KDTree as _KDTree
 
-    def _build_method_data_native(unc):
+    def _build_method_data_native(unc, method_key):
         if unc is None:
             return dict(
                 stacked=None, stacked_abs=None,
@@ -1950,20 +2074,27 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         def _reindex(band):
             return np.stack([_get_row(band, yr) for _,_,_,_,yr in SNAPSHOTS], axis=0)
 
-        if selected_model_key and selected_model_key in unc.get("model_change_vals", {}):
+        # ── Model vs ensemble selection ───────────────────────────────────────
+        # Check if this specific method has the selected model in its cache
+        _this_method_has_model = (
+            selected_model_key is not None and
+            selected_model_key in unc.get("model_change_vals", {})
+        )
+
+        if _this_method_has_model:
             stacked = np.stack([_get_row(unc["model_change_vals"][selected_model_key], yr)
                                 for _,_,_,_,yr in SNAPSHOTS], axis=0)
         else:
             stacked = _reindex(unc["ens_vals"])
 
-        if selected_model_key and selected_model_key in unc.get("model_abs_vals", {}):
+        if _this_method_has_model and selected_model_key in unc.get("model_abs_vals", {}):
             stacked_abs = np.stack([_get_row(unc["model_abs_vals"][selected_model_key], yr)
                                     for _,_,_,_,yr in SNAPSHOTS], axis=0)
         else:
             stacked_abs = _reindex(unc["abs_ens_vals"])
 
-        ens     = (_reindex(unc["ens_vals"])     if selected_model_key else None)
-        abs_ens = (_reindex(unc["abs_ens_vals"]) if selected_model_key else None)
+        ens     = (_reindex(unc["ens_vals"])     if _this_method_has_model else None)
+        abs_ens = (_reindex(unc["abs_ens_vals"]) if _this_method_has_model else None)
 
         def _ab(key):
             return _reindex(unc[key]) if key in unc else np.full((len(SNAPSHOTS), n_pts), np.nan)
@@ -1989,8 +2120,8 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         )
 
     with st.spinner("Loading model uncertainty ranges for both methods…"):
-        _dat_sd = _build_method_data_native(_unc_sd)
-        _dat_dd = _build_method_data_native(_unc_dd)
+        _dat_sd = _build_method_data_native(_unc_sd, "sd")
+        _dat_dd = _build_method_data_native(_unc_dd, "dd")
 
     _fallback_unc = _unc_sd if _unc_sd is not None else _unc_dd
     _fallback_lat_v = _fallback_unc["lat_v"]
@@ -2147,6 +2278,7 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         dd_mask_threshold_deg=thresh_dd,
         frame_ms=frame_ms, dot_opacity=dot_opacity, header_html=header_html,
         initial_method=method,
+        locked_method=_locked_method,
         country_geojson=_borders["country"], regions_geojson=_borders["regions"],
     )
 

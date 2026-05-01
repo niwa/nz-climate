@@ -2354,40 +2354,58 @@ body{margin:0;padding:0 4px;font-family:Arial,sans-serif;background:transparent;
         gs  = float(np.median(d[:, 1]))
         return float(np.rad2deg(gs * 0.55))
 
-    def _render_method(dat, mth, lat_v, lon_v):
-        lm_chg = _log_mode(indicator, is_change=True)
-        lm_abs = _log_mode(indicator, is_change=False)
-        key_c  = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
+        def _render_method(dat, mth, lat_v, lon_v):
+            # If the user has selected a model that locks the active method,
+            # the other method's frames are unreachable from the UI — skip them.
+            # This avoids re-rendering an "ensemble mean" stand-in under a
+            # cache key tagged with a model that doesn't exist in this method.
+            if _locked_method is not None and _locked_method != mth:
+                return [], [], 0.0, 0.0, 0.0, 0.0, 0.0
+
+            lm_chg = _log_mode(indicator, is_change=True)
+            lm_abs = _log_mode(indicator, is_change=False)
+            key_c  = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
                                   colorscale, _chg_vmin, _chg_vmax, lm_chg)
-        cached = _load_frame_cache(key_c, method=mth)
-        if cached:
-            b64_c, lat_min, lat_max, lon_min, lon_max, thresh = cached
-        else:
-            stacked = dat["stacked"] if dat["stacked"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
-            with st.spinner(f"Rendering {len(SNAPSHOTS)} change frames ({mth.upper()})…"):
-                b64_c, lat_min, lat_max, lon_min, lon_max, thresh = prerender_snapshots(
-                    lat_v, lon_v, stacked, _chg_vmin, _chg_vmax,
-                    colorscale, indicator, is_change=(indicator not in _REC_INDICATORS))
-            _save_frame_cache(key_c, (b64_c,lat_min,lat_max,lon_min,lon_max,thresh), method=mth)
+            cached = _load_frame_cache(key_c, method=mth)
+            if cached:
+                b64_c, lat_min, lat_max, lon_min, lon_max, thresh = cached
+            else:
+                stacked = dat["stacked"] if dat["stacked"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
+                with st.spinner(f"Rendering {len(SNAPSHOTS)} change frames ({mth.upper()})…"):
+                        b64_c, lat_min, lat_max, lon_min, lon_max, thresh = prerender_snapshots(
+                        lat_v, lon_v, stacked, _chg_vmin, _chg_vmax,
+                        colorscale, indicator, is_change=(indicator not in _REC_INDICATORS))
+                _save_frame_cache(key_c, (b64_c,lat_min,lat_max,lon_min,lon_max,thresh), method=mth)
 
-        key_a    = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
+            key_a    = _frame_cache_key(indicator, ssp, bp_tag, season, selected_model_key,
                                     colorscale_abs, abs_vmin, abs_vmax, lm_abs)
-        cached_a = _load_frame_cache(key_a, method=mth)
-        if cached_a:
-            b64_a = cached_a[0]
-        else:
-            stacked_abs = dat["stacked_abs"] if dat["stacked_abs"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
-            with st.spinner(f"Rendering {len(SNAPSHOTS)} absolute frames ({mth.upper()})…"):
-                res_a = prerender_snapshots(lat_v, lon_v, stacked_abs,
-                                            abs_vmin, abs_vmax, colorscale_abs,
-                                            indicator, is_change=False)
-            b64_a = res_a[0]
-            _save_frame_cache(key_a, res_a, method=mth)
+            cached_a = _load_frame_cache(key_a, method=mth)
+            if cached_a:
+                b64_a = cached_a[0]
+            else:
+                stacked_abs = dat["stacked_abs"] if dat["stacked_abs"] is not None else np.full((len(SNAPSHOTS), len(lat_v)), np.nan)
+                with st.spinner(f"Rendering {len(SNAPSHOTS)} absolute frames ({mth.upper()})…"):
+                    res_a = prerender_snapshots(lat_v, lon_v, stacked_abs,
+                                                abs_vmin, abs_vmax, colorscale_abs,
+                                                indicator, is_change=False)
+                b64_a = res_a[0]
+                _save_frame_cache(key_a, res_a, method=mth)
 
-        return b64_c, b64_a, lat_min, lat_max, lon_min, lon_max, thresh
+            return b64_c, b64_a, lat_min, lat_max, lon_min, lon_max, thresh
 
-    _b64c_sd, _b64a_sd, lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd, thresh_sd = _render_method(_dat_sd, "sd", _sd_lat_v, _sd_lon_v)
-    _b64c_dd, _b64a_dd, lat_min_dd, lat_max_dd, lon_min_dd, lon_max_dd, thresh_dd = _render_method(_dat_dd, "dd", _dd_lat_v, _dd_lon_v)
+        _b64c_sd, _b64a_sd, lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd, thresh_sd = _render_method(_dat_sd, "sd", _sd_lat_v, _sd_lon_v)
+        _b64c_dd, _b64a_dd, lat_min_dd, lat_max_dd, lon_min_dd, lon_max_dd, thresh_dd = _render_method(_dat_dd, "dd", _dd_lat_v, _dd_lon_v)
+
+        # When a method was skipped, copy bounds from the active method so the
+        # viewport math (center/min/max) stays sane.
+        if _locked_method == "sd":
+            lat_min_dd, lat_max_dd = lat_min_sd, lat_max_sd
+            lon_min_dd, lon_max_dd = lon_min_sd, lon_max_sd
+            thresh_dd = thresh_sd
+        elif _locked_method == "dd":
+            lat_min_sd, lat_max_sd = lat_min_dd, lat_max_dd
+            lon_min_sd, lon_max_sd = lon_min_dd, lon_max_dd
+            thresh_sd = thresh_dd
 
     lat_min, lat_max, lon_min, lon_max = lat_min_sd, lat_max_sd, lon_min_sd, lon_max_sd
     thresh    = _compute_hover_thresh(_sd_lat_v, _sd_lon_v)

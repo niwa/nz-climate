@@ -291,7 +291,7 @@ where uncertainty matters most.
 <div class="method-pills">
 <span class="method-pill sd">📊 Statistical · AI · 12 km</span>
 <span class="method-pill dd">🌀 Dynamical · CCAM · 5 km</span>
-<span class="method-pill">15 indicators</span>
+<span class="method-pill">20+ indicators</span>
 <span class="method-pill">4 SSP scenarios</span>
 </div>
 </div>
@@ -398,7 +398,7 @@ plausible range rather than a single storyline.
 
 <div class="feat">
 <div class="feat-icon">🌡️</div>
-<div class="feat-title">15 climate indicators</div>
+<div class="feat-title">20+ climate indicators</div>
 <div class="feat-body">
 Beyond mean temperature: frost days, hot days above 30 °C, heavy
 rainfall events, wind extremes, and more — the indicators most relevant

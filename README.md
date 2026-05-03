@@ -7,24 +7,52 @@ New Zealand under multiple emissions scenarios. Built with Streamlit.
 
 ## What the app does
 
-The dashboard visualises **25+ climate indicators** (temperature, rainfall, wind,
-and record-chance metrics) downscaled to a 12 km NZ grid from global CMIP6 model
-ensembles. The core map page (`pages/2_NZ_Map.py`) renders two side-by-side
-animated Leaflet maps:
+The dashboard visualises **30+ climate indicators** spanning temperature,
+precipitation, wind, agroclimatic, and record-chance metrics, downscaled to
+high-resolution NZ grids from global CMIP6 model ensembles using two
+independent downscaling approaches:
+
+| Method | Description | Resolution |
+|--------|-------------|------------|
+| **Statistical (SD)** | AI-based statistical downscaling | 12 km |
+| **Dynamical (DD)** | Physics-based regional climate model (CCAM) | 5 km |
+
+The core map page (`pages/2_NZ_Map.py`) renders two side-by-side animated
+Leaflet maps:
 
 | Panel | Shows |
 |-------|-------|
-| **Left** | Absolute projected values (sequential colour scale) |
-| **Right** | Change from a chosen historical baseline (diverging colour scale) |
+| **Left (orange)** | Absolute projected values (sequential colour scale) |
+| **Right (blue)** | Change from a chosen historical baseline (diverging colour scale) |
 
 Key features:
 - Four SSP emissions scenarios (SSP1-2.6 through SSP5-8.5)
 - Two historical baselines (1995–2014, 1986–2005)
+- Toggle between Statistical and Dynamical downscaling methods
 - Multi-model ensemble mean + per-model selection
 - Animated timeline blending between snapshot periods
-- Click-to-pin time-series chart with model uncertainty bands (50 % / 90 % intervals)
+- Click-to-pin time-series chart with model uncertainty bands (50% / 90% intervals)
+- Both downscaling methods shown simultaneously in uncertainty charts for comparison
 - Hover tooltips with interpolated values at any grid point
 - Regional council and country border overlays
+- Indicator descriptions and per-snapshot summary statistics
+
+---
+
+## How the app works
+
+The app is a **strict cache consumer** — it never performs live computation.
+All rendering, ensemble statistics, and uncertainty bands are pre-computed
+offline and stored as pickle files in two cache layers:
+
+| Cache | Purpose |
+|-------|---------|
+| **Frame cache** (`assets/frame_cache/`, `assets/frame_cache_dd/`) | Pre-rendered PNG map snapshots |
+| **Uncertainty cache** (`assets/uncertainty_cache/`, `assets/uncertainty_cache_dd/`) | Per-location model spread (percentile bands, ensemble mean) |
+
+In production these caches are served from **Azure Blob Storage** and synced
+to the app's `assets/` directory at startup. In demo mode they are read from
+the committed `test/demo_data/` directory.
 
 ---
 
@@ -38,12 +66,10 @@ Key features:
 ├── assets/
 │   ├── coastlines/                # NZ coastline + regional council shapefiles
 │   ├── color_ranges/              # Pre-computed colour scale JSON files
-│   └── frame_cache/               # Runtime PNG cache (gitignored in production)
-├── helper_scripts/
-│   ├── precompute_color_ranges.py # Compute vmin/vmax across all indicators
-│   ├── precompute_frames.py       # Pre-render PNG snapshots (PBS job)
-│   ├── precompute_record.py       # Pre-compute record-chance indicators
-│   └── precompute_uncertainty.py  # Build model-spread cache (required before running)
+│   ├── frame_cache/               # SD frame cache (gitignored; served from Azure)
+│   ├── frame_cache_dd/            # DD frame cache (gitignored; served from Azure)
+│   ├── uncertainty_cache/         # SD uncertainty cache (gitignored; served from Azure)
+│   └── uncertainty_cache_dd/      # DD uncertainty cache (gitignored; served from Azure)
 ├── test/
 │   ├── generate_demo_data.py      # Creates synthetic demo dataset
 │   ├── test_README.md             # Demo data documentation
@@ -52,19 +78,22 @@ Key features:
 └── README.md
 ```
 
+> **Note:** Pre-compute helper scripts are maintained separately and not
+> included in this repository. The app itself only reads from pre-built caches.
+
 ---
 
-## Quick start — demo mode (no HPC data required)
+## Quick start — demo mode (no external data required)
 
-The app ships with a small synthetic dataset covering the **TX (mean daily max
-temperature)** indicator under **SSP3-7.0**, so the full UI can be explored
-without access to any external storage.
+The repository ships with a small synthetic dataset covering the **TX (mean
+daily max temperature)** indicator under **SSP3-7.0**, so the full UI can be
+explored without access to any external storage or pre-computed caches.
 
 ### 1. Clone the repository
 
 ```bash
 git clone <repo-url>
-cd nz-climate-git
+cd nz-climate
 ```
 
 ### 2. Create a Python environment
@@ -84,8 +113,8 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 ```
 
 > **Python version:** 3.11 is recommended. The app has been tested on 3.11
-> and 3.9. Avoid 3.12+ until `cartopy` and `fiona` wheels are widely available
-> for it.
+> and 3.9. Avoid 3.12+ until `fiona` and `rasterio` wheels are widely
+> available for it.
 
 ### 3. Install dependencies
 
@@ -93,12 +122,12 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Some packages (`geopandas`, `fiona`, `cartopy`, `rasterio`) have C extensions.
-If `pip` fails on any of them, try conda first:
+Some packages (`geopandas`, `fiona`, `rasterio`) have C extensions. If `pip`
+fails on any of them, install via conda first:
 
 ```bash
-conda install -c conda-forge geopandas fiona rasterio cartopy shapely
-pip install -r requirements.txt   # installs remaining pure-Python deps
+conda install -c conda-forge geopandas fiona rasterio shapely
+pip install -r requirements.txt
 ```
 
 ### 4. Generate the demo data (first time only)
@@ -107,9 +136,10 @@ pip install -r requirements.txt   # installs remaining pure-Python deps
 python test/generate_demo_data.py
 ```
 
-This creates the synthetic NetCDF files and uncertainty cache under
-`test/demo_data/`. They are already committed to the repository, so you only
-need to re-run this if you delete them or want to regenerate from scratch.
+This creates synthetic NetCDF files and an uncertainty cache under
+`test/demo_data/`. The outputs are already committed to the repository, so
+you only need to re-run this if you delete them or want to regenerate from
+scratch.
 
 ### 5. Launch the app
 
@@ -117,108 +147,69 @@ need to re-run this if you delete them or want to regenerate from scratch.
 streamlit run Home.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501) in your browser. Navigate to
-**NZ Climate Indicator Map**. A blue banner confirms demo mode is active.
+Open [http://localhost:8501](http://localhost:8501) in your browser and
+navigate to **NZ Climate Indicator Map**. A blue banner confirms demo mode
+is active.
 
-> Demo mode activates automatically when the real NIWA data paths are absent
+> Demo mode activates automatically when the production data paths are absent
 > and `test/demo_data/` exists — no configuration needed.
 
 ---
 
-## Running on NIWA HPC (ESI)
-
-On the NIWA cluster the Conda environment is initialised via the NIWA module
-system before activating the project environment:
-
-```bash
-. /opt/niwa/profile/conda_24.11.3_2025.05.1.sh
-conda activate nz-climate
-
-/path/to/conda/envs/nz-climate/bin/streamlit run Home.py \
-    --server.port 8502 \
-    --server.headless true
-```
-
-The real data is read from the paths configured in `pages/2_NZ_Map.py`:
-
-```python
-DATA_ROOT = Path(os.environ.get(
-    "NZMAP_DATA_ROOT",
-    "/esi/project/niwa03712/ML_Downscaled_CMIP6/...",
-))
-REC_ROOT = Path(os.environ.get(
-    "NZMAP_REC_ROOT",
-    "/esi/project/niwa03712/westphall/nz-climate/REC",
-))
-```
-
-These can be overridden without code changes via environment variables:
-
-```bash
-export NZMAP_DATA_ROOT=/your/data/path
-export NZMAP_REC_ROOT=/your/rec/path
-streamlit run Home.py
-```
-
-Before running with real data, the uncertainty cache must be pre-computed:
-
-```bash
-python helper_scripts/precompute_uncertainty.py
-```
-
----
-
-## Cloud / Azure storage
-
-> **🚧 Placeholder — to be completed once Azure access is confirmed.**
-
-The current hardcoded HPC paths will be replaced with Azure Blob Storage
-references once the storage account is provisioned. The intended approach is:
-
-- Data will be mounted or accessed via the `NZMAP_DATA_ROOT` / `NZMAP_REC_ROOT`
-  environment variables — no code changes required.
-- Pre-computed caches (frame PNGs, uncertainty bands) will be stored in a
-  dedicated container and synced to the app's `assets/` directory on startup.
-- Credentials will be handled via Azure Managed Identity / environment
-  variables — no secrets in code.
-
-**The demo mode in this repository proves the full application pipeline works
-end-to-end from a clean checkout, independent of any storage backend.**
-
----
-
-## Notes for code reviewers
+## Production deployment
 
 ### Data paths
-The two internal HPC paths in `pages/2_NZ_Map.py` (`DATA_ROOT`, `REC_ROOT`)
-are the only pieces of NIWA-internal information in the codebase. Both are
-already externalised to environment variables. They will be replaced with
-Azure storage references once access is granted.
 
-### Demo mode
-The `_DEMO_MODE` flag (Part 1 of `2_NZ_Map.py`) redirects both data roots and
-the uncertainty cache directory to `test/demo_data/` when the real paths are
-absent. It adds a visible banner but otherwise exercises the identical code path
-as production — the same renderer, the same JS player, the same chart logic.
+The app reads data from two configurable root paths, set via environment
+variables:
 
-### Pre-computed caches
-The app is designed around two levels of caching:
+```bash
+export NZMAP_DATA_ROOT=/path/to/indicator/data
+export NZMAP_REC_ROOT=/path/to/record/indicator/data
+```
 
-| Cache | Location | Purpose |
-|-------|----------|---------|
-| `assets/frame_cache/*.pkl` | Disk | Rendered PNG snapshots (expensive, minutes per selection) |
-| `assets/uncertainty_cache/*.pkl` | Disk | Model-spread percentile bands (generated by `precompute_uncertainty.py`) |
+### Azure Blob Storage
 
-The frame cache entries committed to this repo were generated from the demo
-data and are safe to delete — they will be regenerated on first load.
+In production, pre-computed caches are stored in Azure Blob Storage and
+accessed via the `blob_storage` module. The app detects whether it is running
+in cloud mode by checking for the presence of `assets/frame_cache/` on disk:
 
-### Security notes
-- No credentials, tokens, or API keys anywhere in the codebase.
-- On-disk pickle files (`frame_cache`, `uncertainty_cache`) are loaded with
-  `pickle.load`. This is safe as long as only the app writes to those
-  directories. The Azure deployment will restrict write access accordingly.
-- The sidebar posts `postMessage` to sibling iframes for opacity/speed
-  controls — intentional, same-origin only.
+```python
+_ON_CLOUD = not Path("assets/frame_cache").exists()
+```
+
+When `_ON_CLOUD` is `True`, all cache reads are routed through Azure Blob
+rather than local disk. Credentials are handled via environment variables —
+no secrets appear in the codebase.
+
+### Cache structure on Azure
+
+```
+<container>/
+├── assets/frame_cache/<hash>.pkl          # SD PNG snapshots
+├── assets/frame_cache_dd/<hash>.pkl       # DD PNG snapshots
+├── assets/uncertainty_cache/<hash>.pkl    # SD model spread
+├── assets/uncertainty_cache_dd/<hash>.pkl # DD model spread
+└── assets/color_ranges/
+    ├── color_ranges.json                  # Change panel colour ranges
+    └── abs_color_ranges.json              # Absolute panel colour ranges
+```
+
+Cache filenames are MD5 hashes of the full selection key
+`(indicator, ssp, baseline, season, model, colorscale, vmin, vmax, log_mode)`,
+ensuring exact cache hits with no ambiguity.
+
+---
+
+## Indicator groups
+
+| Group | Indicators |
+|-------|-----------|
+| **Precipitation** | DD1mm, PR, R99p, R99pVAL, R99pVALWet, RR1mm, RR25mm, Rx1day |
+| **Temperature** | FD, TN, TNn, T, TX, TX25, TX30, TXx, DTR |
+| **Wind** | sfcwind, Wd10, Wd25, Wd99pVAL, Wx1day |
+| **Agroclimatic** | CD18, HD18, GDD5, GDD10, MD15pd, MD15pf, PEDsrad |
+| **Record chance** | REC_TXx, REC_TNn, REC_Rx1day, REC_Wx1day |
 
 ---
 
@@ -227,11 +218,11 @@ data and are safe to delete — they will be regenerated on first load.
 | Problem | Fix |
 |---------|-----|
 | `geopandas` / `fiona` install fails | `conda install -c conda-forge geopandas fiona` |
-| `cartopy` install fails | `conda install -c conda-forge cartopy` |
-| `No such file or directory: Home.py` | You are not in the repo root — `cd nz-climate-git` |
+| `No such file or directory: Home.py` | You are not in the repo root |
 | Port already in use | Add `--server.port 8503` (or any free port) |
 | Demo banner not appearing | Check `test/demo_data/` exists; re-run `python test/generate_demo_data.py` |
 | Uncertainty cache error in demo | Re-run `python test/generate_demo_data.py` |
+| Indicator shows "frame cache missing" | Frame cache for that selection has not been pre-computed yet |
 
 ---
 
@@ -244,12 +235,20 @@ data and are safe to delete — they will be regenerated on first load.
 | xarray | 2024.1 | NetCDF reading |
 | netcdf4 | 1.6 | xarray engine |
 | numpy | 1.26 | |
-| scipy | 1.13 | Interpolation, image smoothing |
-| matplotlib | latest | PNG rendering |
+| scipy | 1.13 | Interpolation, spatial smoothing |
+| matplotlib | latest | PNG frame rendering, colorbars |
 | Pillow | latest | Image encoding |
-| plotly | 5.22 | Chart.js via Streamlit component |
 | geopandas | 0.14 | Coastline / region shapefiles |
 | shapely | latest | Geometry operations |
 | fiona | latest | Shapefile I/O |
-| rasterio | latest | Raster support |
-| cartopy | latest | Optional — CRS utilities |
+
+---
+
+## Security notes
+
+- No credentials, tokens, or API keys appear anywhere in the codebase.
+- Azure credentials are supplied via environment variables at runtime.
+- On-disk pickle files are written only by trusted pre-compute processes;
+  the app itself is read-only with respect to the cache directories.
+- The sidebar communicates with the map iframe via `postMessage` —
+  intentional and same-origin only.

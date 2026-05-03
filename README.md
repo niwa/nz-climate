@@ -7,7 +7,7 @@ New Zealand under multiple emissions scenarios. Built with Streamlit.
 
 ## What the app does
 
-The dashboard visualises **30+ climate indicators** spanning temperature,
+The dashboard visualises **20+ climate indicators** spanning temperature,
 precipitation, wind, agroclimatic, and record-chance metrics, downscaled to
 high-resolution NZ grids from global CMIP6 model ensembles using two
 independent downscaling approaches:

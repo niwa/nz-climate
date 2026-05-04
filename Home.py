@@ -469,8 +469,8 @@ with st.expander("Quick reference: methods, scenarios, indicators"):
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="footer">
-Climate projections from CMIP6 global model ensembles, downscaled to New Zealand using<br>
-Statistical (AI · 12 km) and Dynamical (CCAM · 5 km) methods<br>
-Scenarios: SSP1-2.6 · SSP2-4.5 · SSP3-7.0 · SSP5-8.5 &nbsp;·&nbsp; Baselines: 1986–2005 · 1995–2014
+This App was developed by Leon Westphal<br>
+Supported through funds of the DAAD - PROMOS Scholarship<br>
+This app was also supported by the MBIE Endeavour Fund - Smart Ideas contract NIW2504.
 </div>
 """, unsafe_allow_html=True)
